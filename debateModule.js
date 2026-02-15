@@ -1,8 +1,7 @@
 // ============================================
-// DEBATE MODULE - Real-time Anonymous Debates
+// DEBATE MODULE - VERSION SIMPLIFIÉE FONCTIONNELLE
 // ============================================
-// État-machine: WAITING → STABILIZING → COUNTDOWN → TOPIC → DEBATE → VOTING → RESULT
-// Système temps réel multi-joueurs avec rôles dynamiques
+// Cette version fonctionne avec polling simple, pas de leader/observateur complexe
 
 class DebateModule {
     constructor(supabaseClient, audioManager) {
@@ -10,23 +9,24 @@ class DebateModule {
         this.audio = audioManager;
         this.userId = this.client.getUserId();
         
-        // État actuel
+        // État
         this.currentState = 'WAITING';
         this.currentSessionId = null;
-        this.myRole = 'spectator'; // spectator, lawyer, judge
+        this.myRole = 'spectator';
+        this.isActive = false;
         
-        // Configuration
+        // Configuration (temps réduits pour test)
         this.config = {
-            minPlayers: 4,
-            stabilizationTime: 5000, // 5 secondes
-            countdownTime: 5000,     // 5 secondes
-            topicTime: 30000,        // 30 secondes
-            debateTime: 60000,       // 60 secondes
-            votingTime: 30000,       // 30 secondes
-            resultTime: 15000        // 15 secondes
+            minPlayers: 2,  // Réduit à 2 pour test facile
+            stabilizationTime: 3000,  // 3s
+            countdownTime: 3000,      // 3s
+            topicTime: 15000,         // 15s
+            debateTime: 30000,        // 30s
+            votingTime: 15000,        // 15s
+            resultTime: 10000         // 10s
         };
         
-        // Données de session
+        // Données
         this.sessionData = {
             participants: [],
             lawyer1: null,
@@ -35,66 +35,34 @@ class DebateModule {
             topic: '',
             messages: [],
             votes: {},
-            startTime: null
+            stateStartTime: Date.now()
         };
         
-        // Timers et intervals
-        this.timers = {
-            state: null,
-            heartbeat: null,
-            stabilization: null,
-            countdown: null
-        };
-        
-        // Sujets prédéfinis
+        // Sujets
         this.defaultTopics = [
             "Ananas sur la pizza : pour ou contre ?",
-            "Chats vs chiens : qui est le meilleur animal ?",
-            "Faut-il bannir les devoirs à la maison ?",
-            "Vivre en ville ou à la campagne ?",
-            "La pineapple appartient-elle à la pizza ?",
-            "Faut-il dormir avec ou sans chaussettes ?",
-            "Le pain au chocolat ou chocolatine ?",
+            "Chats vs chiens : qui est le meilleur ?",
             "Mieux vaut être riche ou célèbre ?",
-            "Les super-héros sont-ils surestimés ?",
-            "Faut-il abolir les lundis ?"
+            "Le pain au chocolat ou chocolatine ?"
         ];
         
-        // Cooldowns
         this.lastMessageTime = 0;
-        this.messageCooldown = 3000; // 3 secondes entre messages
-        
-        // État du module
-        this.isActive = false;
-        this.isInitialized = false;
+        this.messageCooldown = 3000;
         
         this.init();
     }
     
-    // ============================================
-    // INITIALISATION
-    // ============================================
-    
     async init() {
-        console.log('🎭 Initialisation du module Débat...');
+        console.log('🎭 [SIMPLE] Initialisation module débat...');
         
-        // Créer l'interface
         this.createUI();
-        
-        // Créer le badge dans le header
         this.createDebateBadge();
-        
-        // Setup des événements
         this.setupEventListeners();
         
-        // Vérifier si une session existe
-        await this.checkExistingSession();
+        // Démarrer le heartbeat global
+        this.startGlobalHeartbeat();
         
-        // Démarrer le heartbeat
-        this.startHeartbeat();
-        
-        this.isInitialized = true;
-        console.log('✅ Module Débat initialisé');
+        console.log('✅ [SIMPLE] Module initialisé');
     }
     
     createDebateBadge() {
@@ -114,18 +82,14 @@ class DebateModule {
         
         badge.addEventListener('click', () => this.openDebateModule());
         header.appendChild(badge);
-        
-        this.updateBadge();
     }
     
     createUI() {
         const modalHTML = `
             <div class="modal debate-module-modal" id="debateModuleModal">
                 <div class="debate-module-container">
-                    <!-- Close button -->
                     <button class="debate-close-btn" id="closeDebateModule">✖</button>
                     
-                    <!-- Header avec état et timer -->
                     <div class="debate-header">
                         <div class="debate-state-info">
                             <span class="debate-state-icon">⏳</span>
@@ -134,23 +98,21 @@ class DebateModule {
                         <div class="debate-timer" id="debateTimer">--:--</div>
                         <div class="debate-participants-info">
                             <span class="participant-icon">👥</span>
-                            <span id="debateParticipantCount">0</span>/4+
+                            <span id="debateParticipantCount">0</span>/2+
                         </div>
                     </div>
                     
-                    <!-- Zone principale (change selon l'état) -->
                     <div class="debate-main-area" id="debateMainArea">
-                        <!-- Contenu dynamique selon l'état -->
+                        <div class="debate-waiting-screen">
+                            <div class="debate-waiting-icon">⏳</div>
+                            <h2>Chargement...</h2>
+                        </div>
                     </div>
                     
-                    <!-- Zone d'interaction (input, votes, etc.) -->
-                    <div class="debate-interaction-area" id="debateInteractionArea">
-                        <!-- Contenu dynamique selon le rôle -->
-                    </div>
+                    <div class="debate-interaction-area" id="debateInteractionArea"></div>
                     
-                    <!-- Footer avec infos -->
                     <div class="debate-footer">
-                        <div class="debate-role-badge" id="debateRoleBadge">
+                        <div class="debate-role-badge">
                             <span class="role-icon">👤</span>
                             <span id="debateRoleText">Spectateur</span>
                         </div>
@@ -163,446 +125,168 @@ class DebateModule {
     }
     
     setupEventListeners() {
-        // Bouton fermer
         document.getElementById('closeDebateModule')?.addEventListener('click', () => {
             this.closeDebateModule();
         });
-        
-        // Fermer sur fond
-        document.getElementById('debateModuleModal')?.addEventListener('click', (e) => {
-            if (e.target.id === 'debateModuleModal') {
-                this.closeDebateModule();
-            }
-        });
-        
-        // Prévenir double onglet
-        window.addEventListener('beforeunload', () => {
-            if (this.isActive) {
-                this.leaveSession();
-            }
-        });
     }
     
     // ============================================
-    // GESTION SESSION
+    // HEARTBEAT GLOBAL - SIMPLIFIÉ
     // ============================================
     
-    async checkExistingSession() {
-        if (!this.client.isInitialized) return;
-        
-        try {
-            const { data, error } = await this.client.client
-                .from('debate_sessions')
-                .select('*')
-                .eq('is_active', true)
-                .single();
-            
-            if (error || !data) {
-                console.log('Aucune session active');
-                this.currentState = 'WAITING';
-                return;
-            }
-            
-            // Session existe - parser les données avec validation
-            this.currentSessionId = data.id;
-            this.currentState = data.state;
-            
+    startGlobalHeartbeat() {
+        setInterval(async () => {
             try {
-                const parsedData = JSON.parse(data.data || '{}');
-                this.sessionData = {
-                    participants: parsedData.participants || [],
-                    lawyer1: parsedData.lawyer1 || null,
-                    lawyer2: parsedData.lawyer2 || null,
-                    judge: parsedData.judge || null,
-                    topic: parsedData.topic || '',
-                    messages: parsedData.messages || [],
-                    votes: parsedData.votes || {},
-                    startTime: parsedData.startTime || Date.now()
-                };
-            } catch (parseError) {
-                console.error('Erreur parsing session data:', parseError);
-                // Réinitialiser avec des valeurs par défaut
-                this.sessionData = {
-                    participants: [],
-                    lawyer1: null,
-                    lawyer2: null,
-                    judge: null,
-                    topic: '',
-                    messages: [],
-                    votes: {},
-                    startTime: Date.now()
-                };
-            }
-            
-            // Vérifier si la session est bloquée (STABILIZING depuis >10s)
-            if (this.currentState === 'STABILIZING' || this.currentState === 'COUNTDOWN') {
-                const elapsed = Date.now() - this.sessionData.startTime;
-                if (elapsed > 15000) { // 15 secondes
-                    console.log('⚠️ Session bloquée détectée, reset vers WAITING');
-                    this.currentState = 'WAITING';
-                    this.sessionData.startTime = Date.now();
-                    // Mettre à jour en BDD
-                    await this.client.client
-                        .from('debate_sessions')
-                        .update({
-                            state: 'WAITING',
-                            data: JSON.stringify(this.sessionData)
-                        })
-                        .eq('id', this.currentSessionId);
-                }
-            }
-            
-            console.log('📡 Session trouvée:', this.currentState);
-            console.log('👥 Participants:', this.sessionData.participants?.length);
-            this.updateBadge();
-            
-        } catch (error) {
-            console.error('Erreur vérification session:', error);
-        }
-    }
-    
-    async createSession() {
-        if (!this.client.isInitialized) return null;
-        
-        try {
-            // Initialiser sessionData localement AVANT l'insertion
-            this.sessionData = {
-                participants: [this.userId],
-                lawyer1: null,
-                lawyer2: null,
-                judge: null,
-                topic: '',
-                messages: [],
-                votes: {},
-                startTime: Date.now()
-            };
-            
-            const sessionData = {
-                state: 'WAITING', // Commencer par WAITING, pas STABILIZING
-                is_active: true,
-                data: JSON.stringify(this.sessionData),
-                created_at: new Date().toISOString()
-            };
-            
-            const { data, error } = await this.client.client
-                .from('debate_sessions')
-                .insert(sessionData)
-                .select()
-                .single();
-            
-            if (error) throw error;
-            
-            this.currentSessionId = data.id;
-            this.currentState = 'WAITING';
-            
-            console.log('✅ Session créée:', data.id);
-            console.log('👥 Participants:', this.sessionData.participants);
-            return data;
-            
-        } catch (error) {
-            console.error('Erreur création session:', error);
-            return null;
-        }
-    }
-    
-    async joinSession() {
-        if (!this.currentSessionId || !this.client.isInitialized) return false;
-        
-        try {
-            // Récupérer la session
-            const { data: session, error } = await this.client.client
-                .from('debate_sessions')
-                .select('*')
-                .eq('id', this.currentSessionId)
-                .single();
-            
-            if (error || !session) {
-                console.error('Session non trouvée:', error);
-                return false;
-            }
-            
-            // Parser les données avec validation
-            let sessionData;
-            try {
-                sessionData = JSON.parse(session.data || '{}');
-            } catch (parseError) {
-                console.error('Erreur parsing data:', parseError);
-                sessionData = {};
-            }
-            
-            // Ajouter l'utilisateur avec structure valide
-            if (!sessionData.participants) sessionData.participants = [];
-            if (!sessionData.participants.includes(this.userId)) {
-                sessionData.participants.push(this.userId);
-            }
-            
-            // S'assurer que toutes les propriétés existent
-            sessionData.lawyer1 = sessionData.lawyer1 || null;
-            sessionData.lawyer2 = sessionData.lawyer2 || null;
-            sessionData.judge = sessionData.judge || null;
-            sessionData.topic = sessionData.topic || '';
-            sessionData.messages = sessionData.messages || [];
-            sessionData.votes = sessionData.votes || {};
-            sessionData.startTime = sessionData.startTime || Date.now();
-            
-            // Mettre à jour avec gestion d'erreur
-            const { error: updateError } = await this.client.client
-                .from('debate_sessions')
-                .update({
-                    data: JSON.stringify(sessionData)
-                })
-                .eq('id', this.currentSessionId);
-            
-            if (updateError) {
-                console.error('Erreur update session:', updateError);
-                return false;
-            }
-            
-            this.sessionData = sessionData;
-            this.isActive = true;
-            
-            console.log('✅ Rejoint session:', this.currentSessionId);
-            return true;
-            
-        } catch (error) {
-            console.error('Erreur rejoindre session:', error);
-            return false;
-        }
-    }
-    
-    async leaveSession() {
-        if (!this.currentSessionId || !this.isActive) return;
-        
-        try {
-            const { data: session } = await this.client.client
-                .from('debate_sessions')
-                .select('*')
-                .eq('id', this.currentSessionId)
-                .single();
-            
-            if (session) {
-                const sessionData = JSON.parse(session.data || '{}');
-                sessionData.participants = (sessionData.participants || [])
-                    .filter(id => id !== this.userId);
-                
-                await this.client.client
+                // Toujours vérifier s'il y a une session active
+                const { data: sessions } = await this.client.client
                     .from('debate_sessions')
-                    .update({
-                        data: JSON.stringify(sessionData)
-                    })
-                    .eq('id', this.currentSessionId);
+                    .select('*')
+                    .eq('is_active', true)
+                    .limit(1);
+                
+                if (!sessions || sessions.length === 0) {
+                    // Pas de session active
+                    this.currentSessionId = null;
+                    this.currentState = 'WAITING';
+                    this.sessionData.participants = [];
+                } else {
+                    // Session active trouvée
+                    const session = sessions[0];
+                    this.currentSessionId = session.id;
+                    this.currentState = session.state;
+                    
+                    const data = JSON.parse(session.data || '{}');
+                    this.sessionData = {
+                        participants: data.participants || [],
+                        lawyer1: data.lawyer1 || null,
+                        lawyer2: data.lawyer2 || null,
+                        judge: data.judge || null,
+                        topic: data.topic || '',
+                        messages: data.messages || [],
+                        votes: data.votes || {},
+                        stateStartTime: data.stateStartTime || Date.now()
+                    };
+                }
+                
+                // Mettre à jour le badge
+                this.updateBadge();
+                
+                // Si la modale est ouverte, mettre à jour l'UI
+                if (this.isActive) {
+                    this.updateUI();
+                    
+                    // Gérer la progression d'état (SIMPLE - tous les clients peuvent le faire)
+                    await this.checkStateProgression();
+                }
+                
+            } catch (error) {
+                console.error('[SIMPLE] Erreur heartbeat:', error);
             }
-            
-            this.isActive = false;
-            console.log('👋 Quitté la session');
-            
-        } catch (error) {
-            console.error('Erreur quitter session:', error);
-        }
+        }, 1000); // Toutes les secondes
     }
     
     // ============================================
-    // MACHINE À ÉTATS
+    // PROGRESSION D'ÉTAT SIMPLIFIÉE
     // ============================================
     
-    async transitionTo(newState) {
-        console.log(`🔄 Transition: ${this.currentState} → ${newState}`);
+    async checkStateProgression() {
+        const count = this.sessionData.participants?.length || 0;
+        const elapsed = Date.now() - this.sessionData.stateStartTime;
         
-        const oldState = this.currentState;
-        this.currentState = newState;
+        console.log(`[SIMPLE] État: ${this.currentState}, Joueurs: ${count}, Temps: ${Math.floor(elapsed/1000)}s`);
         
-        // Nettoyer les timers de l'ancien état
-        this.clearStateTimers();
-        
-        // Mettre à jour startTime pour les états avec timer
-        if (newState === 'STABILIZING' || newState === 'COUNTDOWN' || 
-            newState === 'TOPIC_SELECTION' || newState === 'DEBATE' || 
-            newState === 'VOTING' || newState === 'RESULT') {
-            this.sessionData.startTime = Date.now();
-        }
-        
-        // Mettre à jour la session en BDD
-        await this.updateSessionState(newState);
-        
-        // Gérer le nouvel état
-        switch (newState) {
+        switch (this.currentState) {
             case 'WAITING':
-                this.handleWaitingState();
+                if (count >= this.config.minPlayers) {
+                    console.log('[SIMPLE] ✅ Assez de joueurs, passage STABILIZING');
+                    await this.changeState('STABILIZING');
+                }
                 break;
+                
             case 'STABILIZING':
-                this.handleStabilizingState();
+                if (count < this.config.minPlayers) {
+                    await this.changeState('WAITING');
+                } else if (elapsed >= this.config.stabilizationTime) {
+                    console.log('[SIMPLE] ✅ Stabilisation OK, passage COUNTDOWN');
+                    await this.changeState('COUNTDOWN');
+                }
                 break;
+                
             case 'COUNTDOWN':
-                this.handleCountdownState();
+                if (elapsed >= this.config.countdownTime) {
+                    console.log('[SIMPLE] ✅ Countdown terminé, attribution rôles');
+                    this.assignRoles();
+                    await this.changeState('TOPIC_SELECTION');
+                }
                 break;
+                
             case 'TOPIC_SELECTION':
-                this.handleTopicSelectionState();
+                if (elapsed >= this.config.topicTime) {
+                    if (!this.sessionData.topic) {
+                        this.sessionData.topic = this.getRandomTopic();
+                    }
+                    console.log('[SIMPLE] ✅ Sujet choisi, début débat');
+                    await this.changeState('DEBATE');
+                }
                 break;
+                
             case 'DEBATE':
-                this.handleDebateState();
+                if (elapsed >= this.config.debateTime) {
+                    console.log('[SIMPLE] ✅ Débat terminé, passage vote');
+                    await this.changeState('VOTING');
+                }
                 break;
+                
             case 'VOTING':
-                this.handleVotingState();
+                if (elapsed >= this.config.votingTime) {
+                    console.log('[SIMPLE] ✅ Vote terminé, affichage résultat');
+                    await this.changeState('RESULT');
+                }
                 break;
+                
             case 'RESULT':
-                this.handleResultState();
+                if (elapsed >= this.config.resultTime) {
+                    console.log('[SIMPLE] ✅ Résultat affiché, retour lobby');
+                    await this.endSession();
+                }
                 break;
         }
+    }
+    
+    async changeState(newState) {
+        if (newState === this.currentState) return;
         
-        // Mettre à jour l'UI
-        this.renderCurrentState();
-        this.updateBadge();
+        console.log(`[SIMPLE] 🔄 ${this.currentState} → ${newState}`);
         
-        // Son de transition
-        if (this.audio) {
-            this.audio.playSound('setPostIt');
+        this.sessionData.stateStartTime = Date.now();
+        
+        // Réinitialiser selon l'état
+        if (newState === 'DEBATE') {
+            this.sessionData.messages = [];
         }
-    }
-    
-    clearStateTimers() {
-        Object.keys(this.timers).forEach(key => {
-            if (this.timers[key]) {
-                clearTimeout(this.timers[key]);
-                clearInterval(this.timers[key]);
-                this.timers[key] = null;
-            }
-        });
-    }
-    
-    // Vérifier si on est le leader (premier participant)
-    isLeader() {
-        return this.sessionData.participants?.[0] === this.userId;
-    }
-    
-    async updateSessionState(state) {
-        if (!this.currentSessionId || !this.client.isInitialized) return;
+        if (newState === 'VOTING') {
+            this.sessionData.votes = {};
+        }
         
+        // Mettre à jour en BDD
         try {
-            // Nettoyer les données avant stringify pour éviter les erreurs
-            const cleanData = {
-                participants: this.sessionData.participants || [],
-                lawyer1: this.sessionData.lawyer1 || null,
-                lawyer2: this.sessionData.lawyer2 || null,
-                judge: this.sessionData.judge || null,
-                topic: this.sessionData.topic || '',
-                messages: this.sessionData.messages || [],
-                votes: this.sessionData.votes || {},
-                startTime: this.sessionData.startTime || Date.now()
-            };
-            
-            const { error } = await this.client.client
+            await this.client.client
                 .from('debate_sessions')
                 .update({
-                    state: state,
-                    data: JSON.stringify(cleanData)
+                    state: newState,
+                    data: JSON.stringify(this.sessionData)
                 })
                 .eq('id', this.currentSessionId);
             
-            if (error) {
-                console.error('Erreur Supabase update:', error);
-            }
+            this.currentState = newState;
+            
         } catch (error) {
-            console.error('Erreur mise à jour état:', error);
+            console.error('[SIMPLE] Erreur changeState:', error);
         }
-    }
-    
-    // ============================================
-    // ÉTATS INDIVIDUELS
-    // ============================================
-    
-    handleWaitingState() {
-        console.log('⏳ État: WAITING');
-        this.myRole = 'spectator';
-        
-        // Vérifier régulièrement si assez de joueurs
-        this.timers.state = setInterval(() => {
-            this.checkCanStartStabilization();
-        }, 1000);
-    }
-    
-    async checkCanStartStabilization() {
-        const count = this.sessionData.participants?.length || 0;
-        console.log(`👥 Vérification joueurs: ${count}/${this.config.minPlayers}`);
-        
-        if (count >= this.config.minPlayers) {
-            // Assez de joueurs, démarrer stabilisation
-            console.log('✅ Assez de joueurs ! Démarrage stabilisation...');
-            await this.transitionTo('STABILIZING');
-        }
-    }
-    
-    handleStabilizingState() {
-        console.log('🔄 État: STABILIZING');
-        console.log('👥 Participants actuels:', this.sessionData.participants);
-        console.log('🆔 Mon ID:', this.userId);
-        console.log('🔑 Leader ID:', this.sessionData.participants?.[0]);
-        
-        // Utiliser le startTime de la session (partagé entre tous)
-        if (!this.sessionData.startTime) {
-            this.sessionData.startTime = Date.now();
-            console.log('⏰ StartTime initialisé:', this.sessionData.startTime);
-        } else {
-            console.log('⏰ StartTime existant:', this.sessionData.startTime);
-        }
-        
-        // Seul le premier participant gère la progression d'état
-        if (!this.isLeader()) {
-            console.log('👁️ Mode observateur (pas le leader)');
-            return; // Les autres ne font rien, ils attendent la sync
-        }
-        
-        console.log('👑 Mode leader - gestion de la progression');
-        
-        this.timers.stabilization = setInterval(async () => {
-            const count = this.sessionData.participants?.length || 0;
-            const elapsed = Date.now() - this.sessionData.startTime;
-            
-            console.log(`🔄 Stabilisation: ${count} joueurs, temps écoulé: ${Math.floor(elapsed / 1000)}s / ${this.config.stabilizationTime / 1000}s`);
-            
-            // Si retombe sous le minimum, reset
-            if (count < this.config.minPlayers) {
-                console.log('⚠️ Pas assez de joueurs, retour WAITING');
-                await this.transitionTo('WAITING');
-                return;
-            }
-            
-            // Si stable depuis 5s, passer au countdown
-            if (elapsed >= this.config.stabilizationTime) {
-                console.log('✅ Stabilisation terminée, passage au countdown');
-                await this.transitionTo('COUNTDOWN');
-            }
-        }, 500);
-    }
-    
-    handleCountdownState() {
-        console.log('⏱️ État: COUNTDOWN');
-        
-        if (!this.isLeader()) {
-            console.log('👁️ Mode observateur (pas le leader)');
-            return;
-        }
-        
-        console.log('👑 Leader - gestion du countdown');
-        
-        this.timers.countdown = setInterval(async () => {
-            const elapsed = Date.now() - this.sessionData.startTime;
-            const remaining = this.config.countdownTime - elapsed;
-            
-            if (remaining <= 0) {
-                // Attribution des rôles et début
-                this.assignRoles();
-                await this.transitionTo('TOPIC_SELECTION');
-            }
-        }, 100);
     }
     
     assignRoles() {
         const participants = [...(this.sessionData.participants || [])];
-        
-        if (participants.length < this.config.minPlayers) {
-            console.error('Pas assez de participants pour assigner les rôles');
-            return;
-        }
         
         // Mélanger
         for (let i = participants.length - 1; i > 0; i--) {
@@ -610,10 +294,9 @@ class DebateModule {
             [participants[i], participants[j]] = [participants[j], participants[i]];
         }
         
-        // Assigner
         this.sessionData.lawyer1 = participants[0];
         this.sessionData.lawyer2 = participants[1];
-        this.sessionData.judge = participants[2];
+        this.sessionData.judge = participants[2] || participants[0];
         
         // Déterminer mon rôle
         if (this.userId === this.sessionData.lawyer1 || this.userId === this.sessionData.lawyer2) {
@@ -624,105 +307,24 @@ class DebateModule {
             this.myRole = 'spectator';
         }
         
-        console.log('🎭 Rôles assignés:', {
-            lawyer1: this.sessionData.lawyer1,
-            lawyer2: this.sessionData.lawyer2,
-            judge: this.sessionData.judge,
-            myRole: this.myRole
-        });
+        console.log('[SIMPLE] 🎭 Mon rôle:', this.myRole);
     }
     
-    handleTopicSelectionState() {
-        console.log('📝 État: TOPIC_SELECTION');
-        
-        if (!this.isLeader()) {
-            console.log('👁️ Mode observateur');
-            return;
-        }
-        
-        this.timers.state = setInterval(async () => {
-            const elapsed = Date.now() - this.sessionData.startTime;
-            const remaining = this.config.topicTime - elapsed;
-            
-            if (remaining <= 0) {
-                // Si pas de sujet, en choisir un aléatoire
-                if (!this.sessionData.topic) {
-                    this.sessionData.topic = this.getRandomTopic();
-                }
-                await this.transitionTo('DEBATE');
-            }
-        }, 100);
-    }
-    
-    handleDebateState() {
-        console.log('💬 État: DEBATE');
-        
-        // Réinitialiser les messages
-        this.sessionData.messages = [];
-        
-        if (!this.isLeader()) {
-            console.log('👁️ Mode observateur');
-            return;
-        }
-        
-        this.timers.state = setInterval(async () => {
-            const elapsed = Date.now() - this.sessionData.startTime;
-            const remaining = this.config.debateTime - elapsed;
-            
-            if (remaining <= 0) {
-                await this.transitionTo('VOTING');
-            }
-        }, 100);
-    }
-    
-    handleVotingState() {
-        console.log('🗳️ État: VOTING');
-        
-        // Réinitialiser les votes
-        this.sessionData.votes = {};
-        
-        if (!this.isLeader()) {
-            console.log('👁️ Mode observateur');
-            return;
-        }
-        
-        this.timers.state = setInterval(async () => {
-            const elapsed = Date.now() - this.sessionData.startTime;
-            const remaining = this.config.votingTime - elapsed;
-            
-            if (remaining <= 0) {
-                await this.transitionTo('RESULT');
-            }
-        }, 100);
-    }
-    
-    handleResultState() {
-        console.log('🏆 État: RESULT');
-        
-        if (!this.isLeader()) {
-            console.log('👁️ Mode observateur');
-            return;
-        }
-        
-        this.timers.state = setTimeout(async () => {
-            // Retour au lobby
-            await this.endSession();
-            await this.transitionTo('WAITING');
-        }, this.config.resultTime);
+    getRandomTopic() {
+        return this.defaultTopics[Math.floor(Math.random() * this.defaultTopics.length)];
     }
     
     async endSession() {
-        if (!this.currentSessionId || !this.client.isInitialized) return;
+        if (!this.currentSessionId) return;
         
         try {
             await this.client.client
                 .from('debate_sessions')
-                .update({
-                    is_active: false
-                })
+                .update({ is_active: false })
                 .eq('id', this.currentSessionId);
             
             this.currentSessionId = null;
+            this.currentState = 'WAITING';
             this.sessionData = {
                 participants: [],
                 lawyer1: null,
@@ -730,616 +332,92 @@ class DebateModule {
                 judge: null,
                 topic: '',
                 messages: [],
-                votes: {}
+                votes: {},
+                stateStartTime: Date.now()
             };
             
-            console.log('✅ Session terminée');
-            
         } catch (error) {
-            console.error('Erreur fin session:', error);
+            console.error('[SIMPLE] Erreur endSession:', error);
         }
     }
     
     // ============================================
-    // ACTIONS UTILISATEUR
+    // OUVERTURE/FERMETURE MODULE
     // ============================================
     
-    async submitTopic(topic) {
-        if (this.currentState !== 'TOPIC_SELECTION') return;
-        if (this.myRole !== 'judge') return;
+    async openDebateModule() {
+        console.log('[SIMPLE] 🎭 Ouverture module...');
         
-        // Valider
-        const validation = ProfanityFilter.validateMessage(topic);
-        if (!validation.isValid) {
-            this.showDebateToast(validation.reason, 'error');
-            return;
-        }
-        
-        if (topic.length > 60) {
-            this.showDebateToast('Sujet trop long (max 60 caractères)', 'error');
-            return;
-        }
-        
-        this.sessionData.topic = validation.filtered;
-        await this.updateSessionState(this.currentState);
-        
-        this.showDebateToast('Sujet soumis ! ✅', 'success');
-        this.renderCurrentState();
-    }
-    
-    async sendMessage(content) {
-        if (this.currentState !== 'DEBATE') return;
-        if (this.myRole !== 'lawyer') return;
-        
-        // Vérifier cooldown
-        const now = Date.now();
-        if (now - this.lastMessageTime < this.messageCooldown) {
-            const remaining = Math.ceil((this.messageCooldown - (now - this.lastMessageTime)) / 1000);
-            this.showDebateToast(`Attends ${remaining}s avant le prochain message`, 'warning');
-            return;
-        }
-        
-        // Valider
-        const validation = ProfanityFilter.validateMessage(content);
-        if (!validation.isValid) {
-            this.showDebateToast(validation.reason, 'error');
-            return;
-        }
-        
-        // Enregistrer message
-        const message = {
-            id: `msg_${Date.now()}_${Math.random()}`,
-            userId: this.userId,
-            content: validation.filtered,
-            timestamp: Date.now()
-        };
-        
-        this.sessionData.messages.push(message);
-        this.lastMessageTime = now;
-        
-        // Sauvegarder
-        await this.updateSessionState(this.currentState);
-        
-        // Mettre à jour l'UI
-        this.renderCurrentState();
-        
-        if (this.audio) {
-            this.audio.playSound('addOpinion');
-        }
-    }
-    
-    async submitVote(lawyerId) {
-        if (this.currentState !== 'VOTING') return;
-        if (this.myRole === 'lawyer') return; // Les avocats ne votent pas
-        
-        // Enregistrer vote
-        this.sessionData.votes[this.userId] = lawyerId;
-        
-        // Sauvegarder
-        await this.updateSessionState(this.currentState);
-        
-        this.showDebateToast('Vote enregistré ! 🗳️', 'success');
-        this.renderCurrentState();
-        
-        if (this.audio) {
-            this.audio.playSound('afterVoting');
-        }
-    }
-    
-    // ============================================
-    // RENDU UI
-    // ============================================
-    
-    renderCurrentState() {
-        const mainArea = document.getElementById('debateMainArea');
-        const interactionArea = document.getElementById('debateInteractionArea');
-        const stateText = document.getElementById('debateStateText');
-        const timer = document.getElementById('debateTimer');
-        const roleText = document.getElementById('debateRoleText');
-        const roleIcon = document.querySelector('.role-icon');
-        const participantCountEl = document.getElementById('debateParticipantCount');
-        
-        if (!mainArea || !interactionArea) return;
-        
-        // Mettre à jour le compteur de participants dans le header
-        if (participantCountEl) {
-            const count = this.sessionData.participants?.length || 0;
-            participantCountEl.textContent = count;
-            console.log(`📊 Affichage: ${count} participants`);
-        }
-        
-        // Mettre à jour le rôle
-        switch (this.myRole) {
-            case 'lawyer':
-                roleText.textContent = 'Avocat';
-                roleIcon.textContent = '⚖️';
-                break;
-            case 'judge':
-                roleText.textContent = 'Juge';
-                roleIcon.textContent = '⚖️';
-                break;
-            default:
-                roleText.textContent = 'Spectateur';
-                roleIcon.textContent = '👤';
-        }
-        
-        // Rendu selon l'état
-        switch (this.currentState) {
-            case 'WAITING':
-                stateText.textContent = 'En attente de joueurs...';
-                this.renderWaitingUI(mainArea, interactionArea);
-                break;
-            case 'STABILIZING':
-                stateText.textContent = 'Stabilisation...';
-                this.renderStabilizingUI(mainArea, interactionArea);
-                break;
-            case 'COUNTDOWN':
-                stateText.textContent = 'Démarrage imminent !';
-                this.renderCountdownUI(mainArea, interactionArea);
-                break;
-            case 'TOPIC_SELECTION':
-                stateText.textContent = 'Choix du sujet';
-                this.renderTopicSelectionUI(mainArea, interactionArea);
-                break;
-            case 'DEBATE':
-                stateText.textContent = '💬 Débat en cours';
-                this.renderDebateUI(mainArea, interactionArea);
-                break;
-            case 'VOTING':
-                stateText.textContent = '🗳️ Phase de vote';
-                this.renderVotingUI(mainArea, interactionArea);
-                break;
-            case 'RESULT':
-                stateText.textContent = '🏆 Résultat';
-                this.renderResultUI(mainArea, interactionArea);
-                break;
-        }
-        
-        // Démarrer le timer
-        this.startTimer();
-    }
-    
-    renderWaitingUI(mainArea, interactionArea) {
-        const count = this.sessionData.participants?.length || 0;
-        
-        mainArea.innerHTML = `
-            <div class="debate-waiting-screen">
-                <div class="debate-waiting-icon">⏳</div>
-                <h2>Salle d'attente</h2>
-                <p class="debate-player-count">
-                    <span class="big-number">${count}</span> / 4 joueurs minimum
-                </p>
-                <div class="debate-progress-bar">
-                    <div class="debate-progress-fill" style="width: ${Math.min(count / 4 * 100, 100)}%"></div>
-                </div>
-                <p class="debate-waiting-hint">
-                    ${count >= 4 ? '✅ Démarrage dès que stable...' : '⏱️ En attente de joueurs...'}
-                </p>
-            </div>
-        `;
-        
-        interactionArea.innerHTML = `
-            <div class="debate-info-box">
-                <p>ℹ️ Le débat démarre automatiquement avec 4+ joueurs.</p>
-            </div>
-        `;
-    }
-    
-    renderStabilizingUI(mainArea, interactionArea) {
-        mainArea.innerHTML = `
-            <div class="debate-stabilizing-screen">
-                <div class="debate-spinner">🔄</div>
-                <h2>Vérification des joueurs...</h2>
-                <p>Ne quittez pas la page !</p>
-            </div>
-        `;
-        
-        interactionArea.innerHTML = '';
-    }
-    
-    renderCountdownUI(mainArea, interactionArea) {
-        mainArea.innerHTML = `
-            <div class="debate-countdown-screen">
-                <div class="debate-countdown-number" id="countdownNumber">5</div>
-                <h2>Préparez-vous !</h2>
-                <p>Les rôles vont être attribués...</p>
-            </div>
-        `;
-        
-        interactionArea.innerHTML = '';
-    }
-    
-    renderTopicSelectionUI(mainArea, interactionArea) {
-        const topic = this.sessionData.topic || '';
-        
-        mainArea.innerHTML = `
-            <div class="debate-topic-screen">
-                <h2>📝 Sujet du débat</h2>
-                ${topic ? `
-                    <div class="debate-topic-display">
-                        <p class="debate-topic-text">${this.escapeHTML(topic)}</p>
-                    </div>
-                ` : `
-                    <div class="debate-topic-waiting">
-                        <p>⏳ Le juge choisit le sujet...</p>
-                    </div>
-                `}
-            </div>
-        `;
-        
-        if (this.myRole === 'judge' && !topic) {
-            interactionArea.innerHTML = `
-                <div class="debate-input-container">
-                    <input 
-                        type="text" 
-                        id="topicInput" 
-                        placeholder="Propose un sujet (max 60 caractères)..."
-                        maxlength="60"
-                        class="debate-input"
-                    />
-                    <button class="debate-submit-btn" id="submitTopicBtn">
-                        Soumettre
-                    </button>
-                </div>
-            `;
-            
-            document.getElementById('submitTopicBtn')?.addEventListener('click', () => {
-                const input = document.getElementById('topicInput');
-                if (input.value.trim()) {
-                    this.submitTopic(input.value.trim());
-                }
-            });
-            
-            document.getElementById('topicInput')?.addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') {
-                    const input = document.getElementById('topicInput');
-                    if (input.value.trim()) {
-                        this.submitTopic(input.value.trim());
-                    }
-                }
-            });
-        } else {
-            interactionArea.innerHTML = `
-                <div class="debate-info-box">
-                    <p>ℹ️ ${this.myRole === 'judge' ? 'Tu as choisi le sujet !' : 'Patiente pendant la sélection du sujet...'}</p>
-                </div>
-            `;
-        }
-    }
-    
-    renderDebateUI(mainArea, interactionArea) {
-        const topic = this.sessionData.topic || 'Sujet non défini';
-        const messages = this.sessionData.messages || [];
-        
-        const lawyer1Messages = messages.filter(m => m.userId === this.sessionData.lawyer1);
-        const lawyer2Messages = messages.filter(m => m.userId === this.sessionData.lawyer2);
-        
-        mainArea.innerHTML = `
-            <div class="debate-active-screen">
-                <div class="debate-topic-banner">
-                    ${this.escapeHTML(topic)}
-                </div>
-                
-                <div class="debate-duel-area">
-                    <div class="debate-lawyer-column lawyer-1">
-                        <div class="lawyer-header">
-                            <span class="lawyer-icon">⚖️</span>
-                            <span>Avocat 1</span>
-                            ${this.userId === this.sessionData.lawyer1 ? '<span class="you-badge">TOI</span>' : ''}
-                        </div>
-                        <div class="lawyer-messages">
-                            ${lawyer1Messages.map(m => `
-                                <div class="lawyer-message">
-                                    ${this.escapeHTML(m.content)}
-                                </div>
-                            `).join('') || '<p class="no-messages">Aucun argument...</p>'}
-                        </div>
-                    </div>
-                    
-                    <div class="debate-vs">VS</div>
-                    
-                    <div class="debate-lawyer-column lawyer-2">
-                        <div class="lawyer-header">
-                            <span class="lawyer-icon">⚖️</span>
-                            <span>Avocat 2</span>
-                            ${this.userId === this.sessionData.lawyer2 ? '<span class="you-badge">TOI</span>' : ''}
-                        </div>
-                        <div class="lawyer-messages">
-                            ${lawyer2Messages.map(m => `
-                                <div class="lawyer-message">
-                                    ${this.escapeHTML(m.content)}
-                                </div>
-                            `).join('') || '<p class="no-messages">Aucun argument...</p>'}
-                        </div>
-                    </div>
-                </div>
-            </div>
-        `;
-        
-        if (this.myRole === 'lawyer') {
-            interactionArea.innerHTML = `
-                <div class="debate-input-container">
-                    <textarea 
-                        id="messageInput" 
-                        placeholder="Ton argument (max 120 caractères)..."
-                        maxlength="120"
-                        rows="2"
-                        class="debate-textarea"
-                    ></textarea>
-                    <button class="debate-submit-btn" id="sendMessageBtn">
-                        Envoyer
-                    </button>
-                </div>
-                <p class="debate-cooldown-hint">⏱️ 3 secondes entre chaque message</p>
-            `;
-            
-            document.getElementById('sendMessageBtn')?.addEventListener('click', () => {
-                const input = document.getElementById('messageInput');
-                if (input.value.trim()) {
-                    this.sendMessage(input.value.trim());
-                    input.value = '';
-                }
-            });
-        } else {
-            interactionArea.innerHTML = `
-                <div class="debate-info-box">
-                    <p>👁️ Tu observes le débat en tant que ${this.myRole === 'judge' ? 'juge' : 'spectateur'}</p>
-                </div>
-            `;
-        }
-    }
-    
-    renderVotingUI(mainArea, interactionArea) {
-        const topic = this.sessionData.topic || '';
-        const votes = this.sessionData.votes || {};
-        const myVote = votes[this.userId];
-        
-        const lawyer1Votes = Object.values(votes).filter(v => v === this.sessionData.lawyer1).length;
-        const lawyer2Votes = Object.values(votes).filter(v => v === this.sessionData.lawyer2).length;
-        const totalVotes = lawyer1Votes + lawyer2Votes;
-        
-        mainArea.innerHTML = `
-            <div class="debate-voting-screen">
-                <div class="debate-topic-banner small">
-                    ${this.escapeHTML(topic)}
-                </div>
-                
-                <h2>🗳️ Qui a gagné le débat ?</h2>
-                
-                <div class="debate-vote-options">
-                    <button 
-                        class="debate-vote-btn ${myVote === this.sessionData.lawyer1 ? 'voted' : ''}" 
-                        id="voteLawyer1Btn"
-                        ${this.myRole === 'lawyer' ? 'disabled' : ''}
-                    >
-                        <div class="vote-lawyer-name">⚖️ Avocat 1</div>
-                        <div class="vote-count">${lawyer1Votes} vote${lawyer1Votes > 1 ? 's' : ''}</div>
-                        ${totalVotes > 0 ? `
-                            <div class="vote-percentage">${Math.round(lawyer1Votes / totalVotes * 100)}%</div>
-                        ` : ''}
-                    </button>
-                    
-                    <button 
-                        class="debate-vote-btn ${myVote === this.sessionData.lawyer2 ? 'voted' : ''}" 
-                        id="voteLawyer2Btn"
-                        ${this.myRole === 'lawyer' ? 'disabled' : ''}
-                    >
-                        <div class="vote-lawyer-name">⚖️ Avocat 2</div>
-                        <div class="vote-count">${lawyer2Votes} vote${lawyer2Votes > 1 ? 's' : ''}</div>
-                        ${totalVotes > 0 ? `
-                            <div class="vote-percentage">${Math.round(lawyer2Votes / totalVotes * 100)}%</div>
-                        ` : ''}
-                    </button>
-                </div>
-            </div>
-        `;
-        
-        if (this.myRole !== 'lawyer') {
-            document.getElementById('voteLawyer1Btn')?.addEventListener('click', () => {
-                this.submitVote(this.sessionData.lawyer1);
-            });
-            
-            document.getElementById('voteLawyer2Btn')?.addEventListener('click', () => {
-                this.submitVote(this.sessionData.lawyer2);
-            });
-            
-            interactionArea.innerHTML = myVote ? `
-                <div class="debate-info-box success">
-                    <p>✅ Vote enregistré !</p>
-                </div>
-            ` : `
-                <div class="debate-info-box">
-                    <p>👆 Clique sur un avocat pour voter</p>
-                </div>
-            `;
-        } else {
-            interactionArea.innerHTML = `
-                <div class="debate-info-box">
-                    <p>⚖️ Les avocats ne peuvent pas voter</p>
-                </div>
-            `;
-        }
-    }
-    
-    renderResultUI(mainArea, interactionArea) {
-        const votes = this.sessionData.votes || {};
-        const lawyer1Votes = Object.values(votes).filter(v => v === this.sessionData.lawyer1).length;
-        const lawyer2Votes = Object.values(votes).filter(v => v === this.sessionData.lawyer2).length;
-        
-        const winner = lawyer1Votes > lawyer2Votes ? 'lawyer1' : 
-                       lawyer2Votes > lawyer1Votes ? 'lawyer2' : 'tie';
-        
-        const totalVotes = lawyer1Votes + lawyer2Votes;
-        
-        mainArea.innerHTML = `
-            <div class="debate-result-screen">
-                <h1 class="debate-result-title">
-                    ${winner === 'tie' ? '🤝 Égalité !' : '🏆 Victoire !'}
-                </h1>
-                
-                ${winner !== 'tie' ? `
-                    <div class="debate-winner-announcement">
-                        <p>⚖️ Avocat ${winner === 'lawyer1' ? '1' : '2'} a gagné !</p>
-                    </div>
-                ` : ''}
-                
-                <div class="debate-final-scores">
-                    <div class="final-score-item ${winner === 'lawyer1' ? 'winner' : ''}">
-                        <div class="score-label">Avocat 1</div>
-                        <div class="score-value">${lawyer1Votes}</div>
-                        <div class="score-percentage">${totalVotes > 0 ? Math.round(lawyer1Votes / totalVotes * 100) : 0}%</div>
-                    </div>
-                    
-                    <div class="final-score-item ${winner === 'lawyer2' ? 'winner' : ''}">
-                        <div class="score-label">Avocat 2</div>
-                        <div class="score-value">${lawyer2Votes}</div>
-                        <div class="score-percentage">${totalVotes > 0 ? Math.round(lawyer2Votes / totalVotes * 100) : 0}%</div>
-                    </div>
-                </div>
-                
-                <p class="debate-total-voters">
-                    ${totalVotes} votant${totalVotes > 1 ? 's' : ''}
-                </p>
-                
-                <p class="debate-return-info">
-                    Retour au lobby dans quelques secondes...
-                </p>
-            </div>
-        `;
-        
-        interactionArea.innerHTML = '';
-    }
-    
-    // ============================================
-    // TIMER
-    // ============================================
-    
-    startTimer() {
-        // Nettoyer l'ancien timer
-        if (this.timerInterval) {
-            clearInterval(this.timerInterval);
-        }
-        
-        this.timerInterval = setInterval(() => {
-            this.updateTimer();
-        }, 100);
-    }
-    
-    updateTimer() {
-        const timerEl = document.getElementById('debateTimer');
-        if (!timerEl) return;
-        
-        let remaining = 0;
-        
-        switch (this.currentState) {
-            case 'COUNTDOWN':
-                remaining = this.config.countdownTime - (Date.now() - (this.sessionData.startTime || Date.now()));
-                break;
-            case 'TOPIC_SELECTION':
-                remaining = this.config.topicTime - (Date.now() - (this.sessionData.startTime || Date.now()));
-                break;
-            case 'DEBATE':
-                remaining = this.config.debateTime - (Date.now() - (this.sessionData.startTime || Date.now()));
-                break;
-            case 'VOTING':
-                remaining = this.config.votingTime - (Date.now() - (this.sessionData.startTime || Date.now()));
-                break;
-            case 'RESULT':
-                remaining = this.config.resultTime - (Date.now() - (this.sessionData.startTime || Date.now()));
-                break;
-            default:
-                timerEl.textContent = '--:--';
-                return;
-        }
-        
-        remaining = Math.max(0, remaining);
-        
-        const minutes = Math.floor(remaining / 60000);
-        const seconds = Math.floor((remaining % 60000) / 1000);
-        
-        timerEl.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
-        
-        // Mise à jour du countdown number
-        if (this.currentState === 'COUNTDOWN') {
-            const countdownNum = document.getElementById('countdownNumber');
-            if (countdownNum) {
-                countdownNum.textContent = Math.ceil(remaining / 1000);
-            }
-        }
-    }
-    
-    // ============================================
-    // HEARTBEAT & SYNC
-    // ============================================
-    
-    startHeartbeat() {
-        // Vérifier l'état toutes les 2 secondes
-        this.timers.heartbeat = setInterval(async () => {
-            // Toujours vérifier s'il y a une session active globale
-            if (!this.currentSessionId) {
-                await this.checkExistingSession();
-            }
-            
-            // Si on a une session, la synchroniser
-            if (this.currentSessionId) {
-                await this.syncWithServer();
-            }
-            
-            // Toujours mettre à jour le badge
-            this.updateBadge();
-        }, 2000);
-    }
-    
-    async syncWithServer() {
-        if (!this.currentSessionId || !this.client.isInitialized) return;
-        
-        try {
-            const { data: session, error } = await this.client.client
-                .from('debate_sessions')
-                .select('*')
-                .eq('id', this.currentSessionId)
-                .single();
-            
-            if (error || !session) {
-                console.error('Erreur sync session:', error);
-                return;
-            }
-            
-            // Mettre à jour les données locales avec validation
+        // Rejoindre ou créer session
+        if (!this.currentSessionId) {
+            // Créer nouvelle session
             try {
-                const parsedData = JSON.parse(session.data || '{}');
-                this.sessionData = {
-                    participants: parsedData.participants || [],
-                    lawyer1: parsedData.lawyer1 || null,
-                    lawyer2: parsedData.lawyer2 || null,
-                    judge: parsedData.judge || null,
-                    topic: parsedData.topic || '',
-                    messages: parsedData.messages || [],
-                    votes: parsedData.votes || {},
-                    startTime: parsedData.startTime || Date.now()
-                };
-            } catch (parseError) {
-                console.error('Erreur parsing session data:', parseError);
-                return;
+                const { data, error } = await this.client.client
+                    .from('debate_sessions')
+                    .insert({
+                        state: 'WAITING',
+                        is_active: true,
+                        data: JSON.stringify({
+                            participants: [this.userId],
+                            stateStartTime: Date.now()
+                        })
+                    })
+                    .select()
+                    .single();
+                
+                if (!error && data) {
+                    this.currentSessionId = data.id;
+                    this.sessionData.participants = [this.userId];
+                    console.log('[SIMPLE] ✅ Session créée');
+                }
+            } catch (error) {
+                console.error('[SIMPLE] Erreur création:', error);
             }
-            
-            // Si l'état a changé côté serveur
-            if (session.state !== this.currentState) {
-                await this.transitionTo(session.state);
-            } else {
-                // Juste rafraîchir l'UI
-                this.renderCurrentState();
+        } else {
+            // Rejoindre session existante
+            if (!this.sessionData.participants.includes(this.userId)) {
+                this.sessionData.participants.push(this.userId);
+                
+                try {
+                    await this.client.client
+                        .from('debate_sessions')
+                        .update({
+                            data: JSON.stringify(this.sessionData)
+                        })
+                        .eq('id', this.currentSessionId);
+                    
+                    console.log('[SIMPLE] ✅ Session rejointe');
+                } catch (error) {
+                    console.error('[SIMPLE] Erreur rejoindre:', error);
+                }
             }
-            
-            this.updateBadge();
-            
-        } catch (error) {
-            console.error('Erreur sync:', error);
+        }
+        
+        this.isActive = true;
+        
+        const modal = document.getElementById('debateModuleModal');
+        if (modal) {
+            modal.classList.add('active');
+        }
+        
+        this.updateUI();
+        
+        if (this.audio) {
+            this.audio.playSound('setPostIt');
+        }
+    }
+    
+    closeDebateModule() {
+        this.isActive = false;
+        
+        const modal = document.getElementById('debateModuleModal');
+        if (modal) {
+            modal.classList.remove('active');
         }
     }
     
     // ============================================
-    // BADGE & OUVERTURE MODULE
+    // UI UPDATE
     // ============================================
     
     updateBadge() {
@@ -1355,93 +433,124 @@ class DebateModule {
         
         badge.classList.remove('waiting', 'stabilizing', 'active', 'voting');
         
-        switch (this.currentState) {
-            case 'WAITING':
-                badge.classList.add('waiting');
-                text.textContent = 'Lobby';
-                break;
-            case 'STABILIZING':
-            case 'COUNTDOWN':
-                badge.classList.add('stabilizing');
-                text.textContent = 'Démarrage...';
-                break;
-            case 'TOPIC_SELECTION':
-            case 'DEBATE':
-                badge.classList.add('active');
-                text.textContent = '🔴 LIVE';
-                break;
-            case 'VOTING':
-                badge.classList.add('voting');
-                text.textContent = 'Vote';
-                break;
-            case 'RESULT':
-                badge.classList.add('active');
-                text.textContent = 'Résultat';
-                break;
+        if (this.currentState === 'WAITING') {
+            badge.classList.add('waiting');
+            text.textContent = 'Lobby';
+        } else if (this.currentState === 'STABILIZING' || this.currentState === 'COUNTDOWN') {
+            badge.classList.add('stabilizing');
+            text.textContent = 'Démarrage...';
+        } else if (this.currentState === 'TOPIC_SELECTION' || this.currentState === 'DEBATE') {
+            badge.classList.add('active');
+            text.textContent = '🔴 LIVE';
+        } else if (this.currentState === 'VOTING') {
+            badge.classList.add('voting');
+            text.textContent = 'Vote';
+        } else if (this.currentState === 'RESULT') {
+            badge.classList.add('active');
+            text.textContent = 'Résultat';
         }
     }
     
-    async openDebateModule() {
-        const modal = document.getElementById('debateModuleModal');
-        if (!modal) return;
+    updateUI() {
+        const mainArea = document.getElementById('debateMainArea');
+        const participantCountEl = document.getElementById('debateParticipantCount');
+        const stateText = document.getElementById('debateStateText');
+        const timer = document.getElementById('debateTimer');
+        const roleText = document.getElementById('debateRoleText');
         
-        console.log('🎭 Ouverture module débat...');
+        if (!mainArea) return;
         
-        // Si pas de session, en créer/rejoindre une
-        if (!this.currentSessionId) {
-            // Vérifier si session existe
-            await this.checkExistingSession();
+        // Mettre à jour compteur
+        if (participantCountEl) {
+            participantCountEl.textContent = this.sessionData.participants?.length || 0;
+        }
+        
+        // Mettre à jour timer
+        if (timer) {
+            const elapsed = Date.now() - this.sessionData.stateStartTime;
+            let duration = 0;
             
-            if (!this.currentSessionId) {
-                // Créer nouvelle session
-                console.log('📝 Création d\'une nouvelle session...');
-                await this.createSession();
-            } else {
-                console.log('📡 Session existante trouvée');
+            switch (this.currentState) {
+                case 'STABILIZING': duration = this.config.stabilizationTime; break;
+                case 'COUNTDOWN': duration = this.config.countdownTime; break;
+                case 'TOPIC_SELECTION': duration = this.config.topicTime; break;
+                case 'DEBATE': duration = this.config.debateTime; break;
+                case 'VOTING': duration = this.config.votingTime; break;
+                case 'RESULT': duration = this.config.resultTime; break;
             }
+            
+            const remaining = Math.max(0, duration - elapsed);
+            const secs = Math.floor(remaining / 1000);
+            const mins = Math.floor(secs / 60);
+            timer.textContent = `${mins}:${(secs % 60).toString().padStart(2, '0')}`;
         }
         
-        // Rejoindre la session
-        const joined = await this.joinSession();
-        if (!joined) {
-            console.error('❌ Impossible de rejoindre la session');
-            return;
+        // Mettre à jour rôle
+        if (roleText) {
+            roleText.textContent = this.myRole === 'lawyer' ? 'Avocat' :
+                                   this.myRole === 'judge' ? 'Juge' : 'Spectateur';
         }
         
-        // Marquer comme actif (pour les updates UI fréquentes)
-        this.isActive = true;
-        
-        // Afficher la modale
-        modal.classList.add('active');
-        
-        // Rendre l'état initial
-        this.renderCurrentState();
-        
-        // Son
-        if (this.audio) {
-            this.audio.playSound('setPostIt');
+        // Mettre à jour texte d'état
+        if (stateText) {
+            const stateNames = {
+                'WAITING': 'En attente de joueurs...',
+                'STABILIZING': 'Stabilisation...',
+                'COUNTDOWN': 'Démarrage imminent !',
+                'TOPIC_SELECTION': 'Choix du sujet',
+                'DEBATE': '💬 Débat en cours',
+                'VOTING': '🗳️ Phase de vote',
+                'RESULT': '🏆 Résultat'
+            };
+            stateText.textContent = stateNames[this.currentState] || this.currentState;
         }
         
-        console.log('✅ Module ouvert, participants:', this.sessionData.participants?.length);
-    }
-    
-    closeDebateModule() {
-        const modal = document.getElementById('debateModuleModal');
-        if (modal) {
-            modal.classList.remove('active');
-        }
+        // Rendu principal
+        const count = this.sessionData.participants?.length || 0;
         
-        // On ne quitte pas vraiment la session, on la ferme juste visuellement
-        // L'utilisateur reste dans la session via heartbeat
-    }
-    
-    // ============================================
-    // UTILITAIRES
-    // ============================================
-    
-    getRandomTopic() {
-        const index = Math.floor(Math.random() * this.defaultTopics.length);
-        return this.defaultTopics[index];
+        if (this.currentState === 'WAITING') {
+            mainArea.innerHTML = `
+                <div class="debate-waiting-screen">
+                    <div class="debate-waiting-icon">⏳</div>
+                    <h2>Salle d'attente</h2>
+                    <p class="debate-player-count">
+                        <span class="big-number">${count}</span> / 2 joueurs minimum
+                    </p>
+                    <div class="debate-progress-bar">
+                        <div class="debate-progress-fill" style="width: ${Math.min(count / 2 * 100, 100)}%"></div>
+                    </div>
+                    <p class="debate-waiting-hint">
+                        ${count >= 2 ? '✅ Démarrage dans quelques secondes...' : '⏱️ En attente de joueurs...'}
+                    </p>
+                </div>
+            `;
+        } else if (this.currentState === 'STABILIZING') {
+            mainArea.innerHTML = `
+                <div class="debate-stabilizing-screen">
+                    <div class="debate-spinner">🔄</div>
+                    <h2>Vérification des joueurs...</h2>
+                    <p>${count} joueurs prêts</p>
+                </div>
+            `;
+        } else if (this.currentState === 'COUNTDOWN') {
+            const remaining = Math.max(0, this.config.countdownTime - (Date.now() - this.sessionData.stateStartTime));
+            const countdownNum = Math.ceil(remaining / 1000);
+            mainArea.innerHTML = `
+                <div class="debate-countdown-screen">
+                    <div class="debate-countdown-number">${countdownNum}</div>
+                    <h2>Préparez-vous !</h2>
+                    <p>Les rôles vont être attribués...</p>
+                </div>
+            `;
+        } else {
+            mainArea.innerHTML = `
+                <div class="debate-waiting-screen">
+                    <h2>${this.currentState}</h2>
+                    <p>État: ${this.myRole}</p>
+                    <p>Sujet: ${this.sessionData.topic || 'En attente...'}</p>
+                </div>
+            `;
+        }
     }
     
     escapeHTML(text) {
@@ -1457,5 +566,4 @@ class DebateModule {
     }
 }
 
-// Export
 window.DebateModule = DebateModule;
