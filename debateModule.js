@@ -9,13 +9,13 @@ class DebateModule {
         this.client = supabaseClient;
         this.audio = audioManager;
         this.userId = this.client.getUserId();
-        
+
         // État
         this.currentState = 'WAITING';
         this.currentSessionId = null;
         this.myRole = null; // 'decisionnaire', 'lawyer1', 'lawyer2', 'spectator'
         this.isActive = false;
-        
+
         // Configuration temporelle
         this.config = {
             minPlayers: 4,           // Min : 1 décisionnaire + 2 avocats + 1 spectateur
@@ -26,7 +26,7 @@ class DebateModule {
             votingTime: 15000,        // 15s pour le vote
             resultTime: 10000         // 10s pour le résultat
         };
-        
+
         // Données de session
         this.sessionData = {
             participants: [],
@@ -40,28 +40,28 @@ class DebateModule {
             votes: {},               // { userId: 'lawyer1' | 'lawyer2' }
             stateStartTime: Date.now()
         };
-        
+
         this.lastMessageTime = 0;
         this.messageCooldown = 2000; // 2s entre chaque message
-        
+
         this.init();
     }
-    
+
     async init() {
         console.log('🎭 [DEBATE] Initialisation module débat avec rôles...');
-        
+
         this.createUI();
         this.createDebateBadge();
         this.setupEventListeners();
         this.startGlobalHeartbeat();
-        
+
         console.log('✅ [DEBATE] Module initialisé');
     }
-    
+
     createDebateBadge() {
         const header = document.querySelector('.header .container');
         if (!header) return;
-        
+
         const badge = document.createElement('div');
         badge.id = 'debateBadge';
         badge.className = 'debate-badge';
@@ -72,11 +72,11 @@ class DebateModule {
                 <span class="debate-participant-count">0</span>
             </div>
         `;
-        
+
         badge.addEventListener('click', () => this.openDebateModule());
         header.appendChild(badge);
     }
-    
+
     createUI() {
         const modalHTML = `
             <div class="modal debate-module-modal" id="debateModuleModal">
@@ -117,42 +117,75 @@ class DebateModule {
                 </div>
             </div>
         `;
-        
+
         document.body.insertAdjacentHTML('beforeend', modalHTML);
     }
-    
+
     setupEventListeners() {
         document.getElementById('closeDebateModule')?.addEventListener('click', () => {
             this.closeDebateModule();
         });
     }
-    
+
     // ============================================
     // HEARTBEAT GLOBAL
     // ============================================
-    
+
     startGlobalHeartbeat() {
+        // Timer local (1s) - SANS requête DB
+        setInterval(() => {
+            const timer = document.getElementById('debateTimer');
+            if (!timer) return;
+
+            const elapsed = Date.now() - this.sessionData.stateStartTime;
+            let duration = 0;
+
+            switch (this.currentState) {
+                case 'STABILIZING': duration = this.config.stabilizationTime; break;
+                case 'COUNTDOWN': duration = this.config.countdownTime; break;
+                case 'TOPIC_SELECTION': duration = this.config.topicTime; break;
+                case 'DEBATE': duration = this.config.debateTime; break;
+                case 'VOTING': duration = this.config.votingTime; break;
+                case 'RESULT': duration = this.config.resultTime; break;
+            }
+
+            const remaining = Math.max(0, duration - elapsed);
+            const secs = Math.floor(remaining / 1000);
+            const mins = Math.floor(secs / 60);
+            timer.textContent = `${mins}:${(secs % 60).toString().padStart(2, '0')}`;
+        }, 1000);
+
+        // Heartbeat LENT (5s) - AVEC requête DB
         setInterval(async () => {
             try {
-                // Récupérer la session active
+                // Ne PAS update si input focus
+                const activeElement = document.activeElement;
+                const isInputFocused = activeElement && (
+                    activeElement.tagName === 'INPUT' ||
+                    activeElement.tagName === 'TEXTAREA'
+                );
+
+                if (isInputFocused) {
+                    console.log('[DEBATE] Skip update - input focus');
+                    return; // Skip complètement
+                }
+
+                // Toujours vérifier s'il y a une session active
                 const { data: sessions } = await this.client.client
                     .from('debate_sessions')
                     .select('*')
                     .eq('is_active', true)
                     .limit(1);
-                
+
                 if (!sessions || sessions.length === 0) {
-                    // Pas de session active
                     this.currentSessionId = null;
                     this.currentState = 'WAITING';
                     this.sessionData.participants = [];
-                    this.myRole = null;
                 } else {
-                    // Session active trouvée
                     const session = sessions[0];
                     this.currentSessionId = session.id;
                     this.currentState = session.state;
-                    
+
                     const data = JSON.parse(session.data || '{}');
                     this.sessionData = {
                         participants: data.participants || [],
@@ -166,26 +199,57 @@ class DebateModule {
                         votes: data.votes || {},
                         stateStartTime: data.stateStartTime || Date.now()
                     };
-                    
+
                     // Déterminer mon rôle
-                    this.updateMyRole();
+                    if (this.sessionData.decisionnaire === this.userId) {
+                        this.myRole = 'decisionnaire';
+                    } else if (this.sessionData.lawyer1 === this.userId) {
+                        this.myRole = 'lawyer1';
+                    } else if (this.sessionData.lawyer2 === this.userId) {
+                        this.myRole = 'lawyer2';
+                    } else {
+                        this.myRole = 'spectator';
+                    }
                 }
-                
+
                 // Mettre à jour le badge
                 this.updateBadge();
-                
+
                 // Si la modale est ouverte, mettre à jour l'UI
                 if (this.isActive) {
                     this.updateUI();
                     await this.checkStateProgression();
                 }
-                
+
             } catch (error) {
                 console.error('[DEBATE] Erreur heartbeat:', error);
             }
-        }, 1000);
+        }, 5000); // 5 SECONDES au lieu de 1
     }
-    
+
+    // Mise à jour du timer uniquement (sans requête DB)
+    updateTimerOnly() {
+        const timer = document.getElementById('debateTimer');
+        if (!timer) return;
+
+        const elapsed = Date.now() - this.sessionData.stateStartTime;
+        let duration = 0;
+
+        switch (this.currentState) {
+            case 'STABILIZING': duration = this.config.stabilizationTime; break;
+            case 'COUNTDOWN': duration = this.config.countdownTime; break;
+            case 'QUESTION': duration = this.config.questionTime; break;
+            case 'DEBATE': duration = this.config.debateTime; break;
+            case 'VOTING': duration = this.config.votingTime; break;
+            case 'RESULT': duration = this.config.resultTime; break;
+        }
+
+        const remaining = Math.max(0, duration - elapsed);
+        const secs = Math.floor(remaining / 1000);
+        const mins = Math.floor(secs / 60);
+        timer.textContent = `${mins}:${(secs % 60).toString().padStart(2, '0')}`;
+    }
+
     updateMyRole() {
         if (this.sessionData.decisionnaire === this.userId) {
             this.myRole = 'decisionnaire';
@@ -197,71 +261,87 @@ class DebateModule {
             this.myRole = 'spectator';
         }
     }
-    
+
     // ============================================
     // PROGRESSION D'ÉTAT
     // ============================================
-    
+
     async checkStateProgression() {
         const count = this.sessionData.participants?.length || 0;
         const elapsed = Date.now() - this.sessionData.stateStartTime;
-        
+
+        // Système de "leader" : seul le premier participant fait la transition
+        // Cela réduit drastiquement les requêtes simultanées
+        const isLeader = this.sessionData.participants[0] === this.userId;
+
+        if (!isLeader) {
+            // Les non-leaders observent seulement
+            return;
+        }
+
+        // Ajouter un petit délai aléatoire pour éviter les conflits
+        const randomDelay = Math.random() * 200;
+
         switch (this.currentState) {
             case 'WAITING':
                 if (count >= this.config.minPlayers) {
-                    await this.transitionToState('STABILIZING');
+                    setTimeout(() => this.transitionToState('STABILIZING'), randomDelay);
                 }
                 break;
-                
+
             case 'STABILIZING':
                 if (elapsed >= this.config.stabilizationTime) {
-                    await this.transitionToState('COUNTDOWN');
+                    setTimeout(() => this.transitionToState('COUNTDOWN'), randomDelay);
                 }
                 break;
-                
+
             case 'COUNTDOWN':
                 if (elapsed >= this.config.countdownTime) {
                     // Attribuer les rôles et passer à QUESTION
-                    await this.assignRoles();
-                    await this.transitionToState('QUESTION');
+                    setTimeout(async () => {
+                        await this.assignRoles();
+                        await this.transitionToState('QUESTION');
+                    }, randomDelay);
                 }
                 break;
-                
+
             case 'QUESTION':
                 if (elapsed >= this.config.questionTime) {
                     // Si pas de question, utiliser une par défaut
-                    if (!this.sessionData.question) {
-                        await this.setDefaultQuestion();
-                    }
-                    await this.transitionToState('DEBATE');
+                    setTimeout(async () => {
+                        if (!this.sessionData.question) {
+                            await this.setDefaultQuestion();
+                        }
+                        await this.transitionToState('DEBATE');
+                    }, randomDelay);
                 }
                 break;
-                
+
             case 'DEBATE':
                 if (elapsed >= this.config.debateTime) {
-                    await this.transitionToState('VOTING');
+                    setTimeout(() => this.transitionToState('VOTING'), randomDelay);
                 }
                 break;
-                
+
             case 'VOTING':
                 if (elapsed >= this.config.votingTime) {
-                    await this.transitionToState('RESULT');
+                    setTimeout(() => this.transitionToState('RESULT'), randomDelay);
                 }
                 break;
-                
+
             case 'RESULT':
                 if (elapsed >= this.config.resultTime) {
-                    await this.endSession();
+                    setTimeout(() => this.endSession(), randomDelay);
                 }
                 break;
         }
     }
-    
+
     async transitionToState(newState) {
         console.log(`[DEBATE] Transition: ${this.currentState} → ${newState}`);
-        
+
         this.sessionData.stateStartTime = Date.now();
-        
+
         try {
             await this.client.client
                 .from('debate_sessions')
@@ -270,29 +350,29 @@ class DebateModule {
                     data: JSON.stringify(this.sessionData)
                 })
                 .eq('id', this.currentSessionId);
-            
+
             console.log(`[DEBATE] ✅ État changé: ${newState}`);
         } catch (error) {
             console.error('[DEBATE] Erreur transition:', error);
         }
     }
-    
+
     async assignRoles() {
         // Mélanger les participants
         const shuffled = [...this.sessionData.participants].sort(() => Math.random() - 0.5);
-        
+
         this.sessionData.decisionnaire = shuffled[0];
         this.sessionData.lawyer1 = shuffled[1];
         this.sessionData.lawyer2 = shuffled[2];
         this.sessionData.spectators = shuffled.slice(3);
-        
+
         console.log('[DEBATE] Rôles attribués:', {
             decisionnaire: this.sessionData.decisionnaire,
             lawyer1: this.sessionData.lawyer1,
             lawyer2: this.sessionData.lawyer2,
             spectators: this.sessionData.spectators
         });
-        
+
         // Sauvegarder
         try {
             await this.client.client
@@ -305,7 +385,7 @@ class DebateModule {
             console.error('[DEBATE] Erreur attribution rôles:', error);
         }
     }
-    
+
     async setDefaultQuestion() {
         const defaultQuestions = [
             "Les chats sont-ils meilleurs que les chiens ?",
@@ -314,9 +394,9 @@ class DebateModule {
             "Pain au chocolat ou chocolatine ?",
             "Les séries sont-elles meilleures que les films ?"
         ];
-        
+
         this.sessionData.question = defaultQuestions[Math.floor(Math.random() * defaultQuestions.length)];
-        
+
         try {
             await this.client.client
                 .from('debate_sessions')
@@ -328,10 +408,10 @@ class DebateModule {
             console.error('[DEBATE] Erreur question par défaut:', error);
         }
     }
-    
+
     async endSession() {
         console.log('[DEBATE] Fin de la session');
-        
+
         try {
             await this.client.client
                 .from('debate_sessions')
@@ -339,43 +419,44 @@ class DebateModule {
                     is_active: false
                 })
                 .eq('id', this.currentSessionId);
-            
+
             this.currentSessionId = null;
             this.currentState = 'WAITING';
             this.myRole = null;
-            
+
         } catch (error) {
             console.error('[DEBATE] Erreur fin session:', error);
         }
     }
-    
+
     // ============================================
     // GESTION DES MESSAGES
     // ============================================
-    
+
     async sendLawyerMessage(message) {
         // Seuls les avocats peuvent envoyer ici
         if (this.myRole !== 'lawyer1' && this.myRole !== 'lawyer2') {
             this.showDebateToast('Seuls les avocats peuvent écrire ici !', 'error');
             return;
         }
-        
+
         // Cooldown
         const now = Date.now();
         if (now - this.lastMessageTime < this.messageCooldown) {
-            this.showDebateToast('Attends un peu avant d\'écrire à nouveau', 'warning');
+            const remaining = Math.ceil((this.messageCooldown - (now - this.lastMessageTime)) / 1000);
+            this.showDebateToast(`Attends ${remaining}s avant d\'écrire à nouveau`, 'warning');
             return;
         }
-        
+
         // Validation
         if (!message || message.trim().length === 0) return;
         if (message.length > 200) {
             this.showDebateToast('Message trop long (max 200 caractères)', 'error');
             return;
         }
-        
+
         this.lastMessageTime = now;
-        
+
         const newMessage = {
             id: Date.now() + '_' + Math.random().toString(36).substr(2, 9),
             userId: this.userId,
@@ -383,9 +464,12 @@ class DebateModule {
             content: this.escapeHTML(message),
             timestamp: Date.now()
         };
-        
+
+        // Ajouter localement d'abord pour feedback immédiat
         this.sessionData.lawyerMessages.push(newMessage);
-        
+        this.updateDebateMessages();
+
+        // Envoyer à la DB de manière asynchrone
         try {
             await this.client.client
                 .from('debate_sessions')
@@ -393,47 +477,55 @@ class DebateModule {
                     data: JSON.stringify(this.sessionData)
                 })
                 .eq('id', this.currentSessionId);
-            
+
             if (this.audio) {
                 this.audio.playSound('addOpinion');
             }
         } catch (error) {
             console.error('[DEBATE] Erreur envoi message avocat:', error);
+            // Retirer le message local en cas d'erreur
+            this.sessionData.lawyerMessages.pop();
+            this.updateDebateMessages();
+            this.showDebateToast('Erreur d\'envoi du message', 'error');
         }
     }
-    
+
     async sendSpectatorMessage(message) {
         // Seuls les spectateurs peuvent envoyer ici
         if (this.myRole !== 'spectator') {
             this.showDebateToast('Seuls les spectateurs peuvent écrire ici !', 'error');
             return;
         }
-        
+
         // Cooldown
         const now = Date.now();
         if (now - this.lastMessageTime < this.messageCooldown) {
-            this.showDebateToast('Attends un peu avant d\'écrire à nouveau', 'warning');
+            const remaining = Math.ceil((this.messageCooldown - (now - this.lastMessageTime)) / 1000);
+            this.showDebateToast(`Attends ${remaining}s avant d\'écrire à nouveau`, 'warning');
             return;
         }
-        
+
         // Validation
         if (!message || message.trim().length === 0) return;
         if (message.length > 150) {
             this.showDebateToast('Message trop long (max 150 caractères)', 'error');
             return;
         }
-        
+
         this.lastMessageTime = now;
-        
+
         const newMessage = {
             id: Date.now() + '_' + Math.random().toString(36).substr(2, 9),
             userId: this.userId,
             content: this.escapeHTML(message),
             timestamp: Date.now()
         };
-        
+
+        // Ajouter localement d'abord pour feedback immédiat
         this.sessionData.spectatorMessages.push(newMessage);
-        
+        this.updateDebateMessages();
+
+        // Envoyer à la DB de manière asynchrone
         try {
             await this.client.client
                 .from('debate_sessions')
@@ -441,35 +533,39 @@ class DebateModule {
                     data: JSON.stringify(this.sessionData)
                 })
                 .eq('id', this.currentSessionId);
-            
+
             if (this.audio) {
                 this.audio.playSound('setPostIt');
             }
         } catch (error) {
             console.error('[DEBATE] Erreur envoi message spectateur:', error);
+            // Retirer le message local en cas d'erreur
+            this.sessionData.spectatorMessages.pop();
+            this.updateDebateMessages();
+            this.showDebateToast('Erreur d\'envoi du message', 'error');
         }
     }
-    
+
     async submitQuestion(question) {
         // Seul le décisionnaire peut soumettre la question
         if (this.myRole !== 'decisionnaire') {
             this.showDebateToast('Seul le décisionnaire peut choisir la question !', 'error');
             return;
         }
-        
+
         // Validation
         if (!question || question.trim().length === 0) {
             this.showDebateToast('La question ne peut pas être vide', 'error');
             return;
         }
-        
+
         if (question.length > 120) {
             this.showDebateToast('Question trop longue (max 120 caractères)', 'error');
             return;
         }
-        
+
         this.sessionData.question = this.escapeHTML(question);
-        
+
         try {
             await this.client.client
                 .from('debate_sessions')
@@ -477,9 +573,9 @@ class DebateModule {
                     data: JSON.stringify(this.sessionData)
                 })
                 .eq('id', this.currentSessionId);
-            
+
             this.showDebateToast('Question enregistrée !', 'success');
-            
+
             if (this.audio) {
                 this.audio.playSound('setPostIt');
             }
@@ -487,22 +583,22 @@ class DebateModule {
             console.error('[DEBATE] Erreur soumission question:', error);
         }
     }
-    
+
     async submitVote(lawyerId) {
         // Seuls les spectateurs peuvent voter
         if (this.myRole !== 'spectator') {
             this.showDebateToast('Seuls les spectateurs peuvent voter !', 'error');
             return;
         }
-        
+
         // Vérifier qu'on n'a pas déjà voté
         if (this.sessionData.votes[this.userId]) {
             this.showDebateToast('Tu as déjà voté !', 'warning');
             return;
         }
-        
+
         this.sessionData.votes[this.userId] = lawyerId;
-        
+
         try {
             await this.client.client
                 .from('debate_sessions')
@@ -510,9 +606,9 @@ class DebateModule {
                     data: JSON.stringify(this.sessionData)
                 })
                 .eq('id', this.currentSessionId);
-            
+
             this.showDebateToast('Vote enregistré !', 'success');
-            
+
             if (this.audio) {
                 this.audio.playSound('afterVoting');
             }
@@ -520,14 +616,14 @@ class DebateModule {
             console.error('[DEBATE] Erreur vote:', error);
         }
     }
-    
+
     // ============================================
     // OUVERTURE/FERMETURE
     // ============================================
-    
+
     async openDebateModule() {
         console.log('[DEBATE] Ouverture du module');
-        
+
         // Si pas de session active, en créer une
         if (!this.currentSessionId) {
             try {
@@ -551,9 +647,9 @@ class DebateModule {
                     })
                     .select()
                     .single();
-                
+
                 if (error) throw error;
-                
+
                 this.currentSessionId = data.id;
                 this.sessionData.participants = [this.userId];
                 console.log('[DEBATE] ✅ Session créée');
@@ -564,7 +660,7 @@ class DebateModule {
             // Rejoindre session existante
             if (!this.sessionData.participants.includes(this.userId)) {
                 this.sessionData.participants.push(this.userId);
-                
+
                 try {
                     await this.client.client
                         .from('debate_sessions')
@@ -572,54 +668,54 @@ class DebateModule {
                             data: JSON.stringify(this.sessionData)
                         })
                         .eq('id', this.currentSessionId);
-                    
+
                     console.log('[DEBATE] ✅ Session rejointe');
                 } catch (error) {
                     console.error('[DEBATE] Erreur rejoindre:', error);
                 }
             }
         }
-        
+
         this.isActive = true;
-        
+
         const modal = document.getElementById('debateModuleModal');
         if (modal) {
             modal.classList.add('active');
         }
-        
+
         this.updateUI();
-        
+
         if (this.audio) {
             this.audio.playSound('setPostIt');
         }
     }
-    
+
     closeDebateModule() {
         this.isActive = false;
-        
+
         const modal = document.getElementById('debateModuleModal');
         if (modal) {
             modal.classList.remove('active');
         }
     }
-    
+
     // ============================================
     // UI UPDATE
     // ============================================
-    
+
     updateBadge() {
         const badge = document.getElementById('debateBadge');
         if (!badge) return;
-        
+
         const dot = badge.querySelector('.debate-status-dot');
         const text = badge.querySelector('.debate-badge-text');
         const count = badge.querySelector('.debate-participant-count');
-        
+
         const participantCount = this.sessionData.participants?.length || 0;
         count.textContent = participantCount;
-        
+
         badge.classList.remove('waiting', 'stabilizing', 'active', 'voting');
-        
+
         switch (this.currentState) {
             case 'WAITING':
                 badge.classList.add('waiting');
@@ -645,7 +741,7 @@ class DebateModule {
                 break;
         }
     }
-    
+
     updateUI() {
         const mainArea = document.getElementById('debateMainArea');
         const interactionArea = document.getElementById('debateInteractionArea');
@@ -654,19 +750,25 @@ class DebateModule {
         const timer = document.getElementById('debateTimer');
         const roleText = document.getElementById('debateRoleText');
         const roleBadge = document.getElementById('debateRoleBadge');
-        
+
         if (!mainArea) return;
-        
+
+        // Sauvegarder l'état précédent pour éviter les re-renders inutiles
+        const previousState = this.previousRenderState || {};
+        const currentStateKey = `${this.currentState}_${this.myRole}_${this.sessionData.question}_${this.sessionData.votes[this.userId] || 'novote'}`;
+
+        this.previousRenderState = this.previousRenderState || {};
+
         // Mettre à jour compteur
         if (participantCountEl) {
             participantCountEl.textContent = this.sessionData.participants?.length || 0;
         }
-        
+
         // Mettre à jour timer
         if (timer) {
             const elapsed = Date.now() - this.sessionData.stateStartTime;
             let duration = 0;
-            
+
             switch (this.currentState) {
                 case 'STABILIZING': duration = this.config.stabilizationTime; break;
                 case 'COUNTDOWN': duration = this.config.countdownTime; break;
@@ -675,13 +777,13 @@ class DebateModule {
                 case 'VOTING': duration = this.config.votingTime; break;
                 case 'RESULT': duration = this.config.resultTime; break;
             }
-            
+
             const remaining = Math.max(0, duration - elapsed);
             const secs = Math.floor(remaining / 1000);
             const mins = Math.floor(secs / 60);
             timer.textContent = `${mins}:${(secs % 60).toString().padStart(2, '0')}`;
         }
-        
+
         // Mettre à jour rôle
         if (roleText && roleBadge) {
             const roleIcons = {
@@ -690,17 +792,17 @@ class DebateModule {
                 'lawyer2': '👔',
                 'spectator': '👁️'
             };
-            
+
             const roleNames = {
                 'decisionnaire': 'Décisionnaire',
                 'lawyer1': 'Avocat 1',
                 'lawyer2': 'Avocat 2',
                 'spectator': 'Spectateur'
             };
-            
+
             roleBadge.querySelector('.role-icon').textContent = roleIcons[this.myRole] || '👤';
             roleText.textContent = roleNames[this.myRole] || 'En attente...';
-            
+
             // Colorer le badge selon le rôle
             roleBadge.classList.remove('role-decisionnaire', 'role-lawyer', 'role-spectator');
             if (this.myRole === 'decisionnaire') {
@@ -711,7 +813,7 @@ class DebateModule {
                 roleBadge.classList.add('role-spectator');
             }
         }
-        
+
         // Mettre à jour texte d'état
         if (stateText) {
             const stateNames = {
@@ -725,40 +827,132 @@ class DebateModule {
             };
             stateText.textContent = stateNames[this.currentState] || this.currentState;
         }
-        
-        // Rendu selon l'état
-        switch (this.currentState) {
-            case 'WAITING':
-                this.renderWaitingScreen(mainArea, interactionArea);
-                break;
-            case 'STABILIZING':
-                this.renderStabilizingScreen(mainArea, interactionArea);
-                break;
-            case 'COUNTDOWN':
-                this.renderCountdownScreen(mainArea, interactionArea);
-                break;
-            case 'QUESTION':
-                this.renderQuestionScreen(mainArea, interactionArea);
-                break;
-            case 'DEBATE':
-                this.renderDebateScreen(mainArea, interactionArea);
-                break;
-            case 'VOTING':
-                this.renderVotingScreen(mainArea, interactionArea);
-                break;
-            case 'RESULT':
-                this.renderResultScreen(mainArea, interactionArea);
-                break;
+
+        // Ne re-render que si l'état ou le contexte a changé
+        const shouldRerender = previousState.stateKey !== currentStateKey;
+        this.previousRenderState.stateKey = currentStateKey;
+
+        // Toujours mettre à jour les chats en mode DEBATE (pour les nouveaux messages)
+        const shouldUpdateDebateChat = this.currentState === 'DEBATE' &&
+            (previousState.lawyerMessagesCount !== this.sessionData.lawyerMessages.length ||
+                previousState.spectatorMessagesCount !== this.sessionData.spectatorMessages.length);
+
+        this.previousRenderState.lawyerMessagesCount = this.sessionData.lawyerMessages.length;
+        this.previousRenderState.spectatorMessagesCount = this.sessionData.spectatorMessages.length;
+
+        // Toujours mettre à jour les votes en mode VOTING (pour les nouveaux votes)
+        const shouldUpdateVotes = this.currentState === 'VOTING' &&
+            previousState.votesCount !== Object.keys(this.sessionData.votes).length;
+
+        this.previousRenderState.votesCount = Object.keys(this.sessionData.votes).length;
+
+        // Rendu selon l'état (seulement si nécessaire)
+        if (shouldRerender) {
+            switch (this.currentState) {
+                case 'WAITING':
+                    this.renderWaitingScreen(mainArea, interactionArea);
+                    break;
+                case 'STABILIZING':
+                    this.renderStabilizingScreen(mainArea, interactionArea);
+                    break;
+                case 'COUNTDOWN':
+                    this.renderCountdownScreen(mainArea, interactionArea);
+                    break;
+                case 'QUESTION':
+                    this.renderQuestionScreen(mainArea, interactionArea);
+                    break;
+                case 'DEBATE':
+                    this.renderDebateScreen(mainArea, interactionArea);
+                    break;
+                case 'VOTING':
+                    this.renderVotingScreen(mainArea, interactionArea);
+                    break;
+                case 'RESULT':
+                    this.renderResultScreen(mainArea, interactionArea);
+                    break;
+            }
+        } else if (shouldUpdateDebateChat) {
+            // Mise à jour légère : seulement les messages
+            this.updateDebateMessages();
+        } else if (shouldUpdateVotes) {
+            // Mise à jour légère : seulement les votes
+            this.updateVoteCounts();
         }
     }
-    
+
+    // ============================================
+    // MISES À JOUR LÉGÈRES (sans re-render complet)
+    // ============================================
+
+    updateDebateMessages() {
+        const lawyersChat = document.getElementById('lawyersChat');
+        const spectatorsChat = document.getElementById('spectatorsChat');
+
+        if (lawyersChat) {
+            let messagesHTML = '';
+            for (const msg of this.sessionData.lawyerMessages) {
+                const isLawyer1 = msg.role === 'lawyer1';
+                const lawyerName = isLawyer1 ? 'Avocat 1' : 'Avocat 2';
+                const lawyerClass = isLawyer1 ? 'lawyer-1' : 'lawyer-2';
+
+                messagesHTML += `
+                    <div class="lawyer-message ${lawyerClass}">
+                        <div class="lawyer-name">${lawyerName}</div>
+                        <div class="lawyer-text">${msg.content}</div>
+                    </div>
+                `;
+            }
+            lawyersChat.innerHTML = messagesHTML || '<p class="no-messages">Aucun message pour le moment...</p>';
+            lawyersChat.scrollTop = lawyersChat.scrollHeight;
+        }
+
+        if (spectatorsChat) {
+            spectatorsChat.innerHTML = this.renderSpectatorMessages();
+            spectatorsChat.scrollTop = spectatorsChat.scrollHeight;
+        }
+    }
+
+    updateVoteCounts() {
+        const votes1 = Object.values(this.sessionData.votes).filter(v => v === 'lawyer1').length;
+        const votes2 = Object.values(this.sessionData.votes).filter(v => v === 'lawyer2').length;
+        const totalVotes = votes1 + votes2;
+
+        // Mettre à jour les cartes de vote
+        const voteCards = document.querySelectorAll('.debate-vote-card');
+        if (voteCards.length === 2) {
+            // Carte Avocat 1
+            voteCards[0].querySelector('.vote-count').textContent = `${votes1} ${votes1 > 1 ? 'votes' : 'vote'}`;
+            if (totalVotes > 0) {
+                const percent = voteCards[0].querySelector('.vote-percentage');
+                if (percent) {
+                    percent.textContent = `${Math.round(votes1 / totalVotes * 100)}%`;
+                }
+            }
+
+            // Carte Avocat 2
+            voteCards[1].querySelector('.vote-count').textContent = `${votes2} ${votes2 > 1 ? 'votes' : 'vote'}`;
+            if (totalVotes > 0) {
+                const percent = voteCards[1].querySelector('.vote-percentage');
+                if (percent) {
+                    percent.textContent = `${Math.round(votes2 / totalVotes * 100)}%`;
+                }
+            }
+        }
+
+        // Mettre à jour le total
+        const voteCount = document.querySelector('.debate-vote-count');
+        if (voteCount) {
+            voteCount.textContent = `Total : ${totalVotes} ${totalVotes > 1 ? 'votes' : 'vote'}`;
+        }
+    }
+
     // ============================================
     // RENDUS D'ÉCRANS
     // ============================================
-    
+
     renderWaitingScreen(mainArea, interactionArea) {
         const count = this.sessionData.participants?.length || 0;
-        
+
         mainArea.innerHTML = `
             <div class="debate-waiting-screen">
                 <div class="debate-waiting-icon">⏳</div>
@@ -782,13 +976,13 @@ class DebateModule {
                 </div>
             </div>
         `;
-        
+
         interactionArea.innerHTML = '';
     }
-    
+
     renderStabilizingScreen(mainArea, interactionArea) {
         const count = this.sessionData.participants?.length || 0;
-        
+
         mainArea.innerHTML = `
             <div class="debate-stabilizing-screen">
                 <div class="debate-spinner">🔄</div>
@@ -796,14 +990,14 @@ class DebateModule {
                 <p>${count} joueurs prêts</p>
             </div>
         `;
-        
+
         interactionArea.innerHTML = '';
     }
-    
+
     renderCountdownScreen(mainArea, interactionArea) {
         const remaining = Math.max(0, this.config.countdownTime - (Date.now() - this.sessionData.stateStartTime));
         const countdownNum = Math.ceil(remaining / 1000);
-        
+
         mainArea.innerHTML = `
             <div class="debate-countdown-screen">
                 <div class="debate-countdown-number">${countdownNum}</div>
@@ -811,13 +1005,13 @@ class DebateModule {
                 <p>Les rôles vont être attribués...</p>
             </div>
         `;
-        
+
         interactionArea.innerHTML = '';
     }
-    
+
     renderQuestionScreen(mainArea, interactionArea) {
         const hasQuestion = !!this.sessionData.question;
-        
+
         mainArea.innerHTML = `
             <div class="debate-question-screen">
                 <div class="debate-phase-banner">
@@ -840,7 +1034,7 @@ class DebateModule {
                 `}
             </div>
         `;
-        
+
         // Zone d'interaction : seul le décisionnaire peut écrire
         if (this.myRole === 'decisionnaire' && !hasQuestion) {
             interactionArea.innerHTML = `
@@ -864,14 +1058,14 @@ class DebateModule {
                     </p>
                 </div>
             `;
-            
+
             document.getElementById('submitQuestionBtn')?.addEventListener('click', () => {
                 const input = document.getElementById('questionInput');
                 if (input) {
                     this.submitQuestion(input.value);
                 }
             });
-            
+
             document.getElementById('questionInput')?.addEventListener('keypress', (e) => {
                 if (e.key === 'Enter') {
                     const input = document.getElementById('questionInput');
@@ -894,17 +1088,17 @@ class DebateModule {
             `;
         }
     }
-    
+
     renderDebateScreen(mainArea, interactionArea) {
         // Afficher la question
         let messagesHTML = '';
-        
+
         // Messages des avocats
         for (const msg of this.sessionData.lawyerMessages) {
             const isLawyer1 = msg.role === 'lawyer1';
             const lawyerName = isLawyer1 ? 'Avocat 1' : 'Avocat 2';
             const lawyerClass = isLawyer1 ? 'lawyer-1' : 'lawyer-2';
-            
+
             messagesHTML += `
                 <div class="lawyer-message ${lawyerClass}">
                     <div class="lawyer-name">${lawyerName}</div>
@@ -912,7 +1106,7 @@ class DebateModule {
                 </div>
             `;
         }
-        
+
         mainArea.innerHTML = `
             <div class="debate-active-screen">
                 <div class="debate-topic-banner">
@@ -935,7 +1129,7 @@ class DebateModule {
                 </div>
             </div>
         `;
-        
+
         // Auto-scroll des chats
         setTimeout(() => {
             const lawyersChat = document.getElementById('lawyersChat');
@@ -943,7 +1137,7 @@ class DebateModule {
             if (lawyersChat) lawyersChat.scrollTop = lawyersChat.scrollHeight;
             if (spectatorsChat) spectatorsChat.scrollTop = spectatorsChat.scrollHeight;
         }, 100);
-        
+
         // Zone d'interaction selon le rôle
         if (this.myRole === 'lawyer1' || this.myRole === 'lawyer2') {
             interactionArea.innerHTML = `
@@ -963,7 +1157,7 @@ class DebateModule {
                     </div>
                 </div>
             `;
-            
+
             document.getElementById('sendLawyerMessageBtn')?.addEventListener('click', () => {
                 const input = document.getElementById('lawyerMessageInput');
                 if (input && input.value.trim()) {
@@ -971,7 +1165,7 @@ class DebateModule {
                     input.value = '';
                 }
             });
-            
+
             document.getElementById('lawyerMessageInput')?.addEventListener('keypress', (e) => {
                 if (e.key === 'Enter') {
                     const input = document.getElementById('lawyerMessageInput');
@@ -999,7 +1193,7 @@ class DebateModule {
                     </div>
                 </div>
             `;
-            
+
             document.getElementById('sendSpectatorMessageBtn')?.addEventListener('click', () => {
                 const input = document.getElementById('spectatorMessageInput');
                 if (input && input.value.trim()) {
@@ -1007,7 +1201,7 @@ class DebateModule {
                     input.value = '';
                 }
             });
-            
+
             document.getElementById('spectatorMessageInput')?.addEventListener('keypress', (e) => {
                 if (e.key === 'Enter') {
                     const input = document.getElementById('spectatorMessageInput');
@@ -1025,12 +1219,12 @@ class DebateModule {
             `;
         }
     }
-    
+
     renderSpectatorMessages() {
         if (this.sessionData.spectatorMessages.length === 0) {
             return '<p class="no-messages">Aucun commentaire...</p>';
         }
-        
+
         let html = '';
         for (const msg of this.sessionData.spectatorMessages) {
             const isMe = msg.userId === this.userId;
@@ -1042,13 +1236,13 @@ class DebateModule {
         }
         return html;
     }
-    
+
     renderVotingScreen(mainArea, interactionArea) {
         const votes1 = Object.values(this.sessionData.votes).filter(v => v === 'lawyer1').length;
         const votes2 = Object.values(this.sessionData.votes).filter(v => v === 'lawyer2').length;
         const totalVotes = votes1 + votes2;
         const hasVoted = !!this.sessionData.votes[this.userId];
-        
+
         mainArea.innerHTML = `
             <div class="debate-voting-screen">
                 <h2>🗳️ À toi de voter !</h2>
@@ -1071,7 +1265,7 @@ class DebateModule {
                 <p class="debate-vote-count">Total : ${totalVotes} ${totalVotes > 1 ? 'votes' : 'vote'}</p>
             </div>
         `;
-        
+
         // Zone d'interaction : seuls les spectateurs peuvent voter
         if (this.myRole === 'spectator') {
             if (hasVoted) {
@@ -1093,11 +1287,11 @@ class DebateModule {
                         </button>
                     </div>
                 `;
-                
+
                 document.getElementById('voteLawyer1Btn')?.addEventListener('click', () => {
                     this.submitVote('lawyer1');
                 });
-                
+
                 document.getElementById('voteLawyer2Btn')?.addEventListener('click', () => {
                     this.submitVote('lawyer2');
                 });
@@ -1110,15 +1304,15 @@ class DebateModule {
             `;
         }
     }
-    
+
     renderResultScreen(mainArea, interactionArea) {
         const votes1 = Object.values(this.sessionData.votes).filter(v => v === 'lawyer1').length;
         const votes2 = Object.values(this.sessionData.votes).filter(v => v === 'lawyer2').length;
         const totalVotes = votes1 + votes2;
-        
+
         let winner = null;
         let winnerName = '';
-        
+
         if (votes1 > votes2) {
             winner = 'lawyer1';
             winnerName = 'Avocat 1';
@@ -1128,7 +1322,7 @@ class DebateModule {
         } else {
             winnerName = 'Égalité !';
         }
-        
+
         mainArea.innerHTML = `
             <div class="debate-result-screen">
                 <div class="debate-result-icon">${winner ? '🏆' : '🤝'}</div>
@@ -1159,20 +1353,20 @@ class DebateModule {
                 </p>
             </div>
         `;
-        
+
         interactionArea.innerHTML = '';
     }
-    
+
     // ============================================
     // UTILITAIRES
     // ============================================
-    
+
     escapeHTML(text) {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
     }
-    
+
     showDebateToast(message, type = 'info') {
         if (window.app && window.app.showToast) {
             window.app.showToast(message, type);
