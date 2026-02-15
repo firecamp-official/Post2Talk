@@ -203,10 +203,36 @@ class DebateModule {
                 return;
             }
             
-            // Session existe
+            // Session existe - parser les données avec validation
             this.currentSessionId = data.id;
             this.currentState = data.state;
-            this.sessionData = JSON.parse(data.data || '{}');
+            
+            try {
+                const parsedData = JSON.parse(data.data || '{}');
+                this.sessionData = {
+                    participants: parsedData.participants || [],
+                    lawyer1: parsedData.lawyer1 || null,
+                    lawyer2: parsedData.lawyer2 || null,
+                    judge: parsedData.judge || null,
+                    topic: parsedData.topic || '',
+                    messages: parsedData.messages || [],
+                    votes: parsedData.votes || {},
+                    startTime: parsedData.startTime || Date.now()
+                };
+            } catch (parseError) {
+                console.error('Erreur parsing session data:', parseError);
+                // Réinitialiser avec des valeurs par défaut
+                this.sessionData = {
+                    participants: [],
+                    lawyer1: null,
+                    lawyer2: null,
+                    judge: null,
+                    topic: '',
+                    messages: [],
+                    votes: {},
+                    startTime: Date.now()
+                };
+            }
             
             console.log('📡 Session trouvée:', data.state);
             this.updateBadge();
@@ -220,13 +246,22 @@ class DebateModule {
         if (!this.client.isInitialized) return null;
         
         try {
+            // Initialiser sessionData localement AVANT l'insertion
+            this.sessionData = {
+                participants: [this.userId],
+                lawyer1: null,
+                lawyer2: null,
+                judge: null,
+                topic: '',
+                messages: [],
+                votes: {},
+                startTime: Date.now()
+            };
+            
             const sessionData = {
-                state: 'STABILIZING',
+                state: 'WAITING', // Commencer par WAITING, pas STABILIZING
                 is_active: true,
-                data: JSON.stringify({
-                    participants: [this.userId],
-                    startTime: Date.now()
-                }),
+                data: JSON.stringify(this.sessionData),
                 created_at: new Date().toISOString()
             };
             
@@ -239,9 +274,10 @@ class DebateModule {
             if (error) throw error;
             
             this.currentSessionId = data.id;
-            this.currentState = 'STABILIZING';
+            this.currentState = 'WAITING';
             
             console.log('✅ Session créée:', data.id);
+            console.log('👥 Participants:', this.sessionData.participants);
             return data;
             
         } catch (error) {
@@ -261,23 +297,47 @@ class DebateModule {
                 .eq('id', this.currentSessionId)
                 .single();
             
-            if (error || !session) return false;
+            if (error || !session) {
+                console.error('Session non trouvée:', error);
+                return false;
+            }
             
-            const sessionData = JSON.parse(session.data || '{}');
+            // Parser les données avec validation
+            let sessionData;
+            try {
+                sessionData = JSON.parse(session.data || '{}');
+            } catch (parseError) {
+                console.error('Erreur parsing data:', parseError);
+                sessionData = {};
+            }
             
-            // Ajouter l'utilisateur
+            // Ajouter l'utilisateur avec structure valide
             if (!sessionData.participants) sessionData.participants = [];
             if (!sessionData.participants.includes(this.userId)) {
                 sessionData.participants.push(this.userId);
             }
             
-            // Mettre à jour
-            await this.client.client
+            // S'assurer que toutes les propriétés existent
+            sessionData.lawyer1 = sessionData.lawyer1 || null;
+            sessionData.lawyer2 = sessionData.lawyer2 || null;
+            sessionData.judge = sessionData.judge || null;
+            sessionData.topic = sessionData.topic || '';
+            sessionData.messages = sessionData.messages || [];
+            sessionData.votes = sessionData.votes || {};
+            sessionData.startTime = sessionData.startTime || Date.now();
+            
+            // Mettre à jour avec gestion d'erreur
+            const { error: updateError } = await this.client.client
                 .from('debate_sessions')
                 .update({
                     data: JSON.stringify(sessionData)
                 })
                 .eq('id', this.currentSessionId);
+            
+            if (updateError) {
+                console.error('Erreur update session:', updateError);
+                return false;
+            }
             
             this.sessionData = sessionData;
             this.isActive = true;
@@ -387,13 +447,29 @@ class DebateModule {
         if (!this.currentSessionId || !this.client.isInitialized) return;
         
         try {
-            await this.client.client
+            // Nettoyer les données avant stringify pour éviter les erreurs
+            const cleanData = {
+                participants: this.sessionData.participants || [],
+                lawyer1: this.sessionData.lawyer1 || null,
+                lawyer2: this.sessionData.lawyer2 || null,
+                judge: this.sessionData.judge || null,
+                topic: this.sessionData.topic || '',
+                messages: this.sessionData.messages || [],
+                votes: this.sessionData.votes || {},
+                startTime: this.sessionData.startTime || Date.now()
+            };
+            
+            const { error } = await this.client.client
                 .from('debate_sessions')
                 .update({
                     state: state,
-                    data: JSON.stringify(this.sessionData)
+                    data: JSON.stringify(cleanData)
                 })
                 .eq('id', this.currentSessionId);
+            
+            if (error) {
+                console.error('Erreur Supabase update:', error);
+            }
         } catch (error) {
             console.error('Erreur mise à jour état:', error);
         }
@@ -415,9 +491,11 @@ class DebateModule {
     
     async checkCanStartStabilization() {
         const count = this.sessionData.participants?.length || 0;
+        console.log(`👥 Vérification joueurs: ${count}/${this.config.minPlayers}`);
         
         if (count >= this.config.minPlayers) {
             // Assez de joueurs, démarrer stabilisation
+            console.log('✅ Assez de joueurs ! Démarrage stabilisation...');
             await this.transitionTo('STABILIZING');
         }
     }
@@ -1113,9 +1191,18 @@ class DebateModule {
     startHeartbeat() {
         // Vérifier l'état toutes les 2 secondes
         this.timers.heartbeat = setInterval(async () => {
-            if (!this.isActive) return;
+            // Toujours vérifier s'il y a une session active globale
+            if (!this.currentSessionId) {
+                await this.checkExistingSession();
+            }
             
-            await this.syncWithServer();
+            // Si on a une session, la synchroniser
+            if (this.currentSessionId) {
+                await this.syncWithServer();
+            }
+            
+            // Toujours mettre à jour le badge
+            this.updateBadge();
         }, 2000);
     }
     
@@ -1123,16 +1210,34 @@ class DebateModule {
         if (!this.currentSessionId || !this.client.isInitialized) return;
         
         try {
-            const { data: session } = await this.client.client
+            const { data: session, error } = await this.client.client
                 .from('debate_sessions')
                 .select('*')
                 .eq('id', this.currentSessionId)
                 .single();
             
-            if (!session) return;
+            if (error || !session) {
+                console.error('Erreur sync session:', error);
+                return;
+            }
             
-            // Mettre à jour les données locales
-            this.sessionData = JSON.parse(session.data || '{}');
+            // Mettre à jour les données locales avec validation
+            try {
+                const parsedData = JSON.parse(session.data || '{}');
+                this.sessionData = {
+                    participants: parsedData.participants || [],
+                    lawyer1: parsedData.lawyer1 || null,
+                    lawyer2: parsedData.lawyer2 || null,
+                    judge: parsedData.judge || null,
+                    topic: parsedData.topic || '',
+                    messages: parsedData.messages || [],
+                    votes: parsedData.votes || {},
+                    startTime: parsedData.startTime || Date.now()
+                };
+            } catch (parseError) {
+                console.error('Erreur parsing session data:', parseError);
+                return;
+            }
             
             // Si l'état a changé côté serveur
             if (session.state !== this.currentState) {
@@ -1196,27 +1301,44 @@ class DebateModule {
         const modal = document.getElementById('debateModuleModal');
         if (!modal) return;
         
-        // Rejoindre ou créer session
+        console.log('🎭 Ouverture module débat...');
+        
+        // Si pas de session, en créer/rejoindre une
         if (!this.currentSessionId) {
             // Vérifier si session existe
             await this.checkExistingSession();
             
             if (!this.currentSessionId) {
                 // Créer nouvelle session
+                console.log('📝 Création d\'une nouvelle session...');
                 await this.createSession();
+            } else {
+                console.log('📡 Session existante trouvée');
             }
         }
         
-        // Rejoindre
-        await this.joinSession();
+        // Rejoindre la session
+        const joined = await this.joinSession();
+        if (!joined) {
+            console.error('❌ Impossible de rejoindre la session');
+            return;
+        }
         
-        // Afficher
+        // Marquer comme actif (pour les updates UI fréquentes)
+        this.isActive = true;
+        
+        // Afficher la modale
         modal.classList.add('active');
+        
+        // Rendre l'état initial
         this.renderCurrentState();
         
+        // Son
         if (this.audio) {
             this.audio.playSound('setPostIt');
         }
+        
+        console.log('✅ Module ouvert, participants:', this.sessionData.participants?.length);
     }
     
     closeDebateModule() {
