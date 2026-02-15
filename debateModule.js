@@ -234,7 +234,26 @@ class DebateModule {
                 };
             }
             
-            console.log('📡 Session trouvée:', data.state);
+            // Vérifier si la session est bloquée (STABILIZING depuis >10s)
+            if (this.currentState === 'STABILIZING' || this.currentState === 'COUNTDOWN') {
+                const elapsed = Date.now() - this.sessionData.startTime;
+                if (elapsed > 15000) { // 15 secondes
+                    console.log('⚠️ Session bloquée détectée, reset vers WAITING');
+                    this.currentState = 'WAITING';
+                    this.sessionData.startTime = Date.now();
+                    // Mettre à jour en BDD
+                    await this.client.client
+                        .from('debate_sessions')
+                        .update({
+                            state: 'WAITING',
+                            data: JSON.stringify(this.sessionData)
+                        })
+                        .eq('id', this.currentSessionId);
+                }
+            }
+            
+            console.log('📡 Session trouvée:', this.currentState);
+            console.log('👥 Participants:', this.sessionData.participants?.length);
             this.updateBadge();
             
         } catch (error) {
@@ -514,10 +533,16 @@ class DebateModule {
     
     handleStabilizingState() {
         console.log('🔄 État: STABILIZING');
+        console.log('👥 Participants actuels:', this.sessionData.participants);
+        console.log('🆔 Mon ID:', this.userId);
+        console.log('🔑 Leader ID:', this.sessionData.participants?.[0]);
         
         // Utiliser le startTime de la session (partagé entre tous)
         if (!this.sessionData.startTime) {
             this.sessionData.startTime = Date.now();
+            console.log('⏰ StartTime initialisé:', this.sessionData.startTime);
+        } else {
+            console.log('⏰ StartTime existant:', this.sessionData.startTime);
         }
         
         // Seul le premier participant gère la progression d'état
@@ -530,8 +555,9 @@ class DebateModule {
         
         this.timers.stabilization = setInterval(async () => {
             const count = this.sessionData.participants?.length || 0;
+            const elapsed = Date.now() - this.sessionData.startTime;
             
-            console.log(`🔄 Stabilisation: ${count} joueurs, temps écoulé: ${Math.floor((Date.now() - this.sessionData.startTime) / 1000)}s`);
+            console.log(`🔄 Stabilisation: ${count} joueurs, temps écoulé: ${Math.floor(elapsed / 1000)}s / ${this.config.stabilizationTime / 1000}s`);
             
             // Si retombe sous le minimum, reset
             if (count < this.config.minPlayers) {
@@ -541,7 +567,6 @@ class DebateModule {
             }
             
             // Si stable depuis 5s, passer au countdown
-            const elapsed = Date.now() - this.sessionData.startTime;
             if (elapsed >= this.config.stabilizationTime) {
                 console.log('✅ Stabilisation terminée, passage au countdown');
                 await this.transitionTo('COUNTDOWN');
@@ -812,8 +837,16 @@ class DebateModule {
         const timer = document.getElementById('debateTimer');
         const roleText = document.getElementById('debateRoleText');
         const roleIcon = document.querySelector('.role-icon');
+        const participantCountEl = document.getElementById('debateParticipantCount');
         
         if (!mainArea || !interactionArea) return;
+        
+        // Mettre à jour le compteur de participants dans le header
+        if (participantCountEl) {
+            const count = this.sessionData.participants?.length || 0;
+            participantCountEl.textContent = count;
+            console.log(`📊 Affichage: ${count} participants`);
+        }
         
         // Mettre à jour le rôle
         switch (this.myRole) {
