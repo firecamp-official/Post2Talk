@@ -478,9 +478,10 @@ class DebateModule {
     }
 
     async endSession() {
-        console.log('[DEBATE] Fin de la session');
+        console.log('[DEBATE] 🏁 Fin de la session');
 
         try {
+            // Désactiver la session
             await this.client.client
                 .from('debate_sessions')
                 .update({
@@ -488,9 +489,24 @@ class DebateModule {
                 })
                 .eq('id', this.currentSessionId);
 
+            console.log('[DEBATE] ✅ Session fermée:', this.currentSessionId);
+            
+            // Réinitialiser l'état local
             this.currentSessionId = null;
             this.currentState = 'WAITING';
             this.myRole = null;
+            this.sessionData = {
+                participants: [],
+                decisionnaire: null,
+                lawyer1: null,
+                lawyer2: null,
+                spectators: [],
+                question: '',
+                lawyerMessages: [],
+                spectatorMessages: [],
+                votes: {},
+                stateStartTime: Date.now()
+            };
 
         } catch (error) {
             console.error('[DEBATE] Erreur fin session:', error);
@@ -693,9 +709,23 @@ class DebateModule {
         try {
             console.log('[DEBATE] 🧹 Nettoyage des sessions zombies...');
             
-            const now = Date.now();
+            // Récupérer TOUTES les sessions actives pour un nettoyage précis
+            const { data: sessions, error } = await this.client.client
+                .from('debate_sessions')
+                .select('*')
+                .eq('is_active', true);
             
-            // Calculer le timestamp limite (sessions plus vieilles que ça = zombies)
+            if (error) throw error;
+            
+            if (!sessions || sessions.length === 0) {
+                console.log('[DEBATE] ✅ Aucune session active');
+                return;
+            }
+            
+            const now = Date.now();
+            const sessionsToClean = [];
+            
+            // Calculer le temps max d'une session
             const maxSessionTime = 
                 this.config.stabilizationTime +
                 this.config.countdownTime +
@@ -703,38 +733,83 @@ class DebateModule {
                 this.config.debateTime +
                 this.config.votingTime +
                 this.config.resultTime +
-                60000; // +1 minute de marge
+                30000; // +30s de marge (réduit de 60s pour être plus agressif)
             
-            const maxAge = now - maxSessionTime;
-            const waitingMaxAge = now - 300000; // 5 min pour WAITING
+            for (const session of sessions) {
+                let shouldClean = false;
+                let reason = '';
+                
+                try {
+                    const data = JSON.parse(session.data || '{}');
+                    const stateStartTime = data.stateStartTime || 0;
+                    const age = now - stateStartTime;
+                    
+                    // Critère 1 : Session trop vieille (dépasse le temps max)
+                    if (age > maxSessionTime) {
+                        shouldClean = true;
+                        reason = `trop vieille (${Math.floor(age/1000)}s)`;
+                    }
+                    
+                    // Critère 2 : WAITING depuis plus de 3 minutes (réduit de 5 à 3)
+                    else if (session.state === 'WAITING' && age > 180000) {
+                        shouldClean = true;
+                        reason = `WAITING abandonné (${Math.floor(age/1000)}s)`;
+                    }
+                    
+                    // Critère 3 : RESULT depuis plus de 30s (devrait être fini)
+                    else if (session.state === 'RESULT' && age > 30000) {
+                        shouldClean = true;
+                        reason = `RESULT expiré (${Math.floor(age/1000)}s)`;
+                    }
+                    
+                    // Critère 4 : Aucun participant (session vide)
+                    else if (!data.participants || data.participants.length === 0) {
+                        shouldClean = true;
+                        reason = 'aucun participant';
+                    }
+                    
+                } catch (parseError) {
+                    // Si impossible de parser le JSON, c'est une session corrompue
+                    shouldClean = true;
+                    reason = 'données corrompues';
+                }
+                
+                if (shouldClean) {
+                    sessionsToClean.push(session.id);
+                    console.log(`[DEBATE] 🧟 Zombie: ${session.id.substring(0, 8)}... (${session.state}, ${reason})`);
+                }
+            }
             
-            // UNE SEULE requête : désactiver directement par timestamp
-            // Utilise la colonne created_at au lieu de parser le JSON
-            const { error } = await this.client.client
-                .from('debate_sessions')
-                .update({ is_active: false })
-                .eq('is_active', true)
-                .or(`created_at.lt.${new Date(maxAge).toISOString()},and(state.eq.WAITING,created_at.lt.${new Date(waitingMaxAge).toISOString()})`);
-            
-            if (error) throw error;
-            
-            console.log('[DEBATE] ✅ Sessions zombies nettoyées (1 requête optimisée)');
+            // Nettoyer en une seule requête si nécessaire
+            if (sessionsToClean.length > 0) {
+                const { error: cleanError } = await this.client.client
+                    .from('debate_sessions')
+                    .update({ is_active: false })
+                    .in('id', sessionsToClean);
+                
+                if (cleanError) throw cleanError;
+                
+                console.log(`[DEBATE] ✅ ${sessionsToClean.length} session(s) nettoyée(s)`);
+            } else {
+                console.log('[DEBATE] ✅ Toutes les sessions sont saines');
+            }
             
         } catch (error) {
-            console.error('[DEBATE] Erreur cleanup:', error);
-            // Fallback : cleanup simple si la requête complexe échoue
+            console.error('[DEBATE] ⚠️ Erreur cleanup:', error);
+            // Fallback ultra-simple : nettoyer TOUT ce qui est en WAITING
             try {
-                // Juste désactiver les sessions vraiment vieilles (>10 min)
-                const tenMinAgo = new Date(Date.now() - 600000).toISOString();
-                await this.client.client
+                console.log('[DEBATE] 🔄 Tentative cleanup fallback...');
+                const { error: fallbackError } = await this.client.client
                     .from('debate_sessions')
                     .update({ is_active: false })
                     .eq('is_active', true)
-                    .lt('created_at', tenMinAgo);
+                    .eq('state', 'WAITING');
                 
-                console.log('[DEBATE] ✅ Cleanup fallback appliqué');
+                if (!fallbackError) {
+                    console.log('[DEBATE] ✅ Cleanup fallback: toutes les sessions WAITING nettoyées');
+                }
             } catch (fallbackError) {
-                console.error('[DEBATE] Erreur cleanup fallback:', fallbackError);
+                console.error('[DEBATE] ❌ Même le fallback a échoué:', fallbackError);
             }
         }
     }
@@ -821,6 +896,28 @@ class DebateModule {
         const modal = document.getElementById('debateModuleModal');
         if (modal) {
             modal.classList.remove('active');
+        }
+        
+        // Si on ferme pendant WAITING et qu'on est seul, nettoyer la session
+        if (this.currentState === 'WAITING' && 
+            this.currentSessionId && 
+            this.sessionData.participants.length === 1 &&
+            this.sessionData.participants[0] === this.userId) {
+            
+            console.log('[DEBATE] 🧹 Nettoyage session WAITING abandonnée');
+            
+            // Nettoyer de manière asynchrone (pas d'attente)
+            this.client.client
+                .from('debate_sessions')
+                .update({ is_active: false })
+                .eq('id', this.currentSessionId)
+                .then(() => {
+                    console.log('[DEBATE] ✅ Session WAITING nettoyée');
+                    this.currentSessionId = null;
+                })
+                .catch(err => {
+                    console.error('[DEBATE] Erreur nettoyage WAITING:', err);
+                });
         }
     }
 
