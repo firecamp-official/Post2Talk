@@ -395,7 +395,14 @@ class DebateModule {
         // Nettoyer les timers de l'ancien état
         this.clearStateTimers();
         
-        // Mettre à jour la session
+        // Mettre à jour startTime pour les états avec timer
+        if (newState === 'STABILIZING' || newState === 'COUNTDOWN' || 
+            newState === 'TOPIC_SELECTION' || newState === 'DEBATE' || 
+            newState === 'VOTING' || newState === 'RESULT') {
+            this.sessionData.startTime = Date.now();
+        }
+        
+        // Mettre à jour la session en BDD
         await this.updateSessionState(newState);
         
         // Gérer le nouvel état
@@ -441,6 +448,11 @@ class DebateModule {
                 this.timers[key] = null;
             }
         });
+    }
+    
+    // Vérifier si on est le leader (premier participant)
+    isLeader() {
+        return this.sessionData.participants?.[0] === this.userId;
     }
     
     async updateSessionState(state) {
@@ -503,19 +515,35 @@ class DebateModule {
     handleStabilizingState() {
         console.log('🔄 État: STABILIZING');
         
-        let startTime = Date.now();
+        // Utiliser le startTime de la session (partagé entre tous)
+        if (!this.sessionData.startTime) {
+            this.sessionData.startTime = Date.now();
+        }
+        
+        // Seul le premier participant gère la progression d'état
+        if (!this.isLeader()) {
+            console.log('👁️ Mode observateur (pas le leader)');
+            return; // Les autres ne font rien, ils attendent la sync
+        }
+        
+        console.log('👑 Mode leader - gestion de la progression');
         
         this.timers.stabilization = setInterval(async () => {
             const count = this.sessionData.participants?.length || 0;
             
+            console.log(`🔄 Stabilisation: ${count} joueurs, temps écoulé: ${Math.floor((Date.now() - this.sessionData.startTime) / 1000)}s`);
+            
             // Si retombe sous le minimum, reset
             if (count < this.config.minPlayers) {
+                console.log('⚠️ Pas assez de joueurs, retour WAITING');
                 await this.transitionTo('WAITING');
                 return;
             }
             
             // Si stable depuis 5s, passer au countdown
-            if (Date.now() - startTime >= this.config.stabilizationTime) {
+            const elapsed = Date.now() - this.sessionData.startTime;
+            if (elapsed >= this.config.stabilizationTime) {
+                console.log('✅ Stabilisation terminée, passage au countdown');
                 await this.transitionTo('COUNTDOWN');
             }
         }, 500);
@@ -524,10 +552,16 @@ class DebateModule {
     handleCountdownState() {
         console.log('⏱️ État: COUNTDOWN');
         
-        const endTime = Date.now() + this.config.countdownTime;
+        if (!this.isLeader()) {
+            console.log('👁️ Mode observateur (pas le leader)');
+            return;
+        }
+        
+        console.log('👑 Leader - gestion du countdown');
         
         this.timers.countdown = setInterval(async () => {
-            const remaining = endTime - Date.now();
+            const elapsed = Date.now() - this.sessionData.startTime;
+            const remaining = this.config.countdownTime - elapsed;
             
             if (remaining <= 0) {
                 // Attribution des rôles et début
@@ -576,10 +610,14 @@ class DebateModule {
     handleTopicSelectionState() {
         console.log('📝 État: TOPIC_SELECTION');
         
-        const endTime = Date.now() + this.config.topicTime;
+        if (!this.isLeader()) {
+            console.log('👁️ Mode observateur');
+            return;
+        }
         
         this.timers.state = setInterval(async () => {
-            const remaining = endTime - Date.now();
+            const elapsed = Date.now() - this.sessionData.startTime;
+            const remaining = this.config.topicTime - elapsed;
             
             if (remaining <= 0) {
                 // Si pas de sujet, en choisir un aléatoire
@@ -597,10 +635,14 @@ class DebateModule {
         // Réinitialiser les messages
         this.sessionData.messages = [];
         
-        const endTime = Date.now() + this.config.debateTime;
+        if (!this.isLeader()) {
+            console.log('👁️ Mode observateur');
+            return;
+        }
         
         this.timers.state = setInterval(async () => {
-            const remaining = endTime - Date.now();
+            const elapsed = Date.now() - this.sessionData.startTime;
+            const remaining = this.config.debateTime - elapsed;
             
             if (remaining <= 0) {
                 await this.transitionTo('VOTING');
@@ -614,10 +656,14 @@ class DebateModule {
         // Réinitialiser les votes
         this.sessionData.votes = {};
         
-        const endTime = Date.now() + this.config.votingTime;
+        if (!this.isLeader()) {
+            console.log('👁️ Mode observateur');
+            return;
+        }
         
         this.timers.state = setInterval(async () => {
-            const remaining = endTime - Date.now();
+            const elapsed = Date.now() - this.sessionData.startTime;
+            const remaining = this.config.votingTime - elapsed;
             
             if (remaining <= 0) {
                 await this.transitionTo('RESULT');
@@ -627,6 +673,11 @@ class DebateModule {
     
     handleResultState() {
         console.log('🏆 État: RESULT');
+        
+        if (!this.isLeader()) {
+            console.log('👁️ Mode observateur');
+            return;
+        }
         
         this.timers.state = setTimeout(async () => {
             // Retour au lobby
