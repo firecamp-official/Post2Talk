@@ -1055,3 +1055,183 @@
         font-size: 36px;
     }
 }
+
+/* ============================================
+   HYPE UI - AMÉLIORATIONS
+   ============================================ */
+
+/* Badge hype élevée */
+.debate-badge.hype-high {
+    animation: pulse 0.6s ease-in-out infinite !important;
+}
+
+.debate-badge.pulse-fast .debate-status-dot {
+    animation: pulse 0.4s ease-in-out infinite !important;
+}
+
+/* Jauge d'intensité */
+.debate-tension-gauge {
+    margin-bottom: 24px;
+    padding: 16px;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 8px;
+    border: 3px solid rgba(0, 0, 0, 0.3);
+    transition: all 0.3s ease;
+}
+
+.debate-tension-gauge.tension-extreme {
+    background: rgba(255, 50, 50, 0.25);
+    border-color: rgba(255, 50, 50, 0.6);
+    animation: tensionPulse 1s ease-in-out infinite;
+    box-shadow: 0 0 20px rgba(255, 50, 50, 0.4);
+}
+
+.debate-tension-gauge.tension-high {
+    background: rgba(255, 150, 0, 0.2);
+    border-color: rgba(255, 150, 0, 0.5);
+}
+
+.debate-tension-gauge.tension-medium {
+    background: rgba(255, 200, 0, 0.15);
+    border-color: rgba(255, 200, 0, 0.4);
+}
+
+.tension-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-pixel);
+    font-size: 14px;
+    color: #FFF;
+    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.5);
+    margin-bottom: 8px;
+}
+
+.tension-icon {
+    font-size: 20px;
+    animation: sparkle 2s ease-in-out infinite;
+}
+
+@keyframes sparkle {
+    0%, 100% { transform: scale(1) rotate(0deg); }
+    50% { transform: scale(1.2) rotate(10deg); }
+}
+
+.tension-bar-container {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.tension-bar-bg {
+    flex: 1;
+    font-family: var(--font-mono);
+    font-size: 18px;
+    letter-spacing: 1px;
+    color: #FFE66D;
+    text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.5);
+}
+
+.tension-percentage {
+    font-family: var(--font-mono);
+    font-size: 24px;
+    font-weight: bold;
+    color: #FFE66D;
+    text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.5);
+    min-width: 60px;
+    text-align: right;
+}
+
+@keyframes tensionPulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.02); }
+}
+
+/* Animation flash changement de leader */
+.leader-change-flash {
+    animation: leaderFlash 0.5s ease-out;
+}
+
+@keyframes leaderFlash {
+    0% { background: rgba(255, 255, 255, 0.05); }
+    25% { background: rgba(255, 215, 0, 0.3); }
+    50% { background: rgba(255, 215, 0, 0.4); }
+    75% { background: rgba(255, 215, 0, 0.2); }
+    100% { background: rgba(255, 255, 255, 0.05); }
+}
+
+/* Timer states - États visuels d'urgence */
+.debate-timer.timer-normal {
+    color: #FFE66D;
+}
+
+.debate-timer.timer-warning {
+    color: #FFA500;
+    animation: timerWarning 1.2s ease-in-out infinite;
+}
+
+.debate-timer.timer-critical {
+    color: #FF3333;
+    animation: timerCritical 0.6s ease-in-out infinite;
+    font-size: 36px;
+}
+
+@keyframes timerWarning {
+    0%, 100% { 
+        transform: scale(1); 
+        opacity: 1;
+    }
+    50% { 
+        transform: scale(1.05); 
+        opacity: 0.9;
+    }
+}
+
+@keyframes timerCritical {
+    0%, 100% { 
+        transform: scale(1); 
+        opacity: 1;
+        text-shadow: 3px 3px 0 rgba(0, 0, 0, 0.5);
+    }
+    50% { 
+        transform: scale(1.15); 
+        opacity: 0.85;
+        text-shadow: 3px 3px 0 rgba(0, 0, 0, 0.5),
+                     0 0 10px rgba(255, 51, 51, 0.8);
+    }
+}
+
+/* Responsive adjustments pour HYPE UI */
+@media (max-width: 768px) {
+    .tension-bar-bg {
+        font-size: 14px;
+        letter-spacing: 0.5px;
+    }
+    
+    .tension-percentage {
+        font-size: 18px;
+        min-width: 50px;
+    }
+    
+    .debate-timer.timer-critical {
+        font-size: 28px;
+    }
+}
+
+@media (max-width: 480px) {
+    .debate-tension-gauge {
+        padding: 12px;
+    }
+    
+    .tension-bar-bg {
+        font-size: 12px;
+    }
+    
+    .tension-percentage {
+        font-size: 16px;
+    }
+    
+    .tension-label {
+        font-size: 12px;
+    }
+}
