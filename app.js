@@ -6,11 +6,14 @@
 class AudioManager {
     constructor() {
         this.sounds = {};
-        this.backgroundMusic = null;
+        this.backgroundMusics = [];
+        this.currentMusicIndex = 0;
+        this.currentMusic = null;
         this.musicVolume = 0.3; // Volume par défaut 30%
         this.sfxVolume = 0.5; // Volume effets sonores 50%
         this.isMusicPlaying = false;
         this.isMuted = false;
+        this.isTransitioning = false; // Pour éviter les transitions simultanées
         
         this.initAudio();
         this.createAudioControls();
@@ -19,12 +22,24 @@ class AudioManager {
     initAudio() {
         // Charger les effets sonores
         const soundEffects = {
+            // Sons existants
             addOpinion: 'soundEffect/addOpinion.mp3',
             afterVoting: 'soundEffect/afterVoting.mp3',
             outZone: 'soundEffect/outZone.mp3',
             reportMessage: 'soundEffect/reportMessage.mp3',
             setPostIt: 'soundEffect/setPostIt.mp3',
-            stopMusic: 'soundEffect/stop-music.mp3'
+            stopMusic: 'soundEffect/stop-music.mp3',
+            
+            // Nouveaux sons débat
+            clock: 'soundEffect/clock.mp3',
+            debatEnd: 'soundEffect/debatEnd.mp3',
+            debateStart: 'soundEffect/debateStart.mp3',
+            lastVote: 'soundEffect/lastVote.mp3',
+            messageSignaled: 'soundEffect/messageSignaled.mp3',
+            spam: 'soundEffect/spam.mp3',
+            
+            // Grésillement radio pour transitions
+            changeMusic: 'soundEffect/changeMusic.mp3'
         };
         
         // Créer les objets Audio pour chaque effet
@@ -39,15 +54,34 @@ class AudioManager {
             }
         }
         
-        // Charger la musique de fond
-        try {
-            this.backgroundMusic = new Audio('backgroundMusic/background.mp3');
-            this.backgroundMusic.loop = true;
-            this.backgroundMusic.volume = 0; // Commence à 0 pour le fade in
-            this.backgroundMusic.preload = 'auto';
-        } catch (error) {
-            console.warn('Impossible de charger la musique de fond', error);
+        // Charger les 3 musiques de fond
+        const musicTracks = [
+            'backgroundMusic/background.mp3',
+            'backgroundMusic/background(1).mp3',
+            'backgroundMusic/background(2).mp3'
+        ];
+        
+        for (const trackPath of musicTracks) {
+            try {
+                const music = new Audio(trackPath);
+                music.loop = true;
+                music.volume = 0; // Commence à 0 pour le fade in
+                music.preload = 'auto';
+                this.backgroundMusics.push(music);
+            } catch (error) {
+                console.warn(`Impossible de charger la musique: ${trackPath}`, error);
+            }
         }
+        
+        // Définir la musique actuelle (première par défaut)
+        if (this.backgroundMusics.length > 0) {
+            this.currentMusic = this.backgroundMusics[0];
+        }
+        
+        console.log('🎵 AudioManager initialisé:', {
+            sons: Object.keys(this.sounds).length,
+            musiques: this.backgroundMusics.length
+        });
     }
     
     createAudioControls() {
@@ -56,6 +90,9 @@ class AudioManager {
             <div class="audio-controls" id="audioControls">
                 <button class="audio-btn music-toggle" id="musicToggle" title="Musique de fond">
                     🎵
+                </button>
+                <button class="audio-btn music-next" id="musicNext" title="Changer de musique">
+                    ⏭️
                 </button>
                 <div class="volume-controls" id="volumeControls">
                     <div class="volume-group">
@@ -69,6 +106,9 @@ class AudioManager {
                         <span id="sfxVolumeValue">50%</span>
                     </div>
                 </div>
+                <button class="audio-btn haptic-toggle" id="hapticToggle" title="Vibrations">
+                    📳
+                </button>
                 <button class="audio-btn mute-toggle" id="muteToggle" title="Couper tous les sons">
                     🔊
                 </button>
@@ -81,16 +121,38 @@ class AudioManager {
         document.body.insertAdjacentHTML('beforeend', controlsHTML);
         
         // Événements des contrôles
-        document.getElementById('musicToggle').addEventListener('click', () => this.toggleMusic());
-        document.getElementById('muteToggle').addEventListener('click', () => this.toggleMute());
-        document.getElementById('musicVolume').addEventListener('input', (e) => this.setMusicVolume(e.target.value));
-        document.getElementById('sfxVolume').addEventListener('input', (e) => this.setSfxVolume(e.target.value));
-        document.getElementById('togglePanel').addEventListener('click', () => this.togglePanel());
+        document.getElementById('musicToggle')?.addEventListener('click', () => this.toggleMusic());
+        document.getElementById('musicNext')?.addEventListener('click', () => this.nextMusic());
+        document.getElementById('muteToggle')?.addEventListener('click', () => this.toggleMute());
+        document.getElementById('musicVolume')?.addEventListener('input', (e) => this.setMusicVolume(e.target.value));
+        document.getElementById('sfxVolume')?.addEventListener('input', (e) => this.setSfxVolume(e.target.value));
+        document.getElementById('togglePanel')?.addEventListener('click', () => this.togglePanel());
+        
+        // Événement toggle haptique
+        document.getElementById('hapticToggle')?.addEventListener('click', () => {
+            if (window.app && window.app.haptic) {
+                const enabled = window.app.haptic.toggle();
+                const btn = document.getElementById('hapticToggle');
+                
+                if (enabled) {
+                    btn.classList.remove('disabled');
+                    btn.title = 'Vibrations activées';
+                    window.app.haptic.success(); // Feedback immédiat
+                    if (window.app.showToast) {
+                        window.app.showToast('Vibrations activées', 'success');
+                    }
+                } else {
+                    btn.classList.add('disabled');
+                    btn.title = 'Vibrations désactivées';
+                    if (window.app.showToast) {
+                        window.app.showToast('Vibrations désactivées', 'info');
+                    }
+                }
+            }
+        });
         
         // Démarrer en mode réduit sur mobile
-        if (window.app && window.app.isMobile()) {
-            setTimeout(() => this.togglePanel(), 100);
-        } else if (window.innerWidth < 768) {
+        if (window.innerWidth < 768) {
             setTimeout(() => this.togglePanel(), 100);
         }
     }
@@ -101,21 +163,25 @@ class AudioManager {
         const toggleBtn = document.getElementById('togglePanel');
         const volumeControls = document.getElementById('volumeControls');
         const musicToggle = document.getElementById('musicToggle');
+        const musicNext = document.getElementById('musicNext');
+        const hapticToggle = document.getElementById('hapticToggle');
         const muteToggle = document.getElementById('muteToggle');
         
         panel.classList.toggle('collapsed');
         
         if (panel.classList.contains('collapsed')) {
-            // Mode réduit : masquer les sliders
             volumeControls.style.display = 'none';
             musicToggle.style.display = 'none';
+            musicNext.style.display = 'none';
+            hapticToggle.style.display = 'none';
             muteToggle.style.display = 'none';
-            toggleBtn.textContent = '🎚️';
+            toggleBtn.textContent = '+';
             toggleBtn.title = 'Afficher les contrôles';
         } else {
-            // Mode complet : afficher tout
             volumeControls.style.display = 'flex';
             musicToggle.style.display = 'flex';
+            musicNext.style.display = 'flex';
+            hapticToggle.style.display = 'flex';
             muteToggle.style.display = 'flex';
             toggleBtn.textContent = '⚙️';
             toggleBtn.title = 'Masquer les contrôles';
@@ -124,14 +190,17 @@ class AudioManager {
     
     // Jouer un effet sonore
     playSound(soundName) {
-        if (this.isMuted || !this.sounds[soundName]) return;
+        if (this.isMuted || !this.sounds[soundName]) {
+            if (!this.sounds[soundName]) {
+                console.warn(`Son "${soundName}" non trouvé`);
+            }
+            return;
+        }
         
         try {
-            // Cloner l'audio pour permettre plusieurs lectures simultanées
             const sound = this.sounds[soundName].cloneNode();
             sound.volume = this.sfxVolume;
             
-            // Jouer avec gestion d'erreur (autoplay policy)
             const playPromise = sound.play();
             if (playPromise !== undefined) {
                 playPromise.catch(error => {
@@ -145,136 +214,289 @@ class AudioManager {
     
     // Toggle musique de fond
     toggleMusic() {
-        if (!this.backgroundMusic) return;
+        if (!this.currentMusic) return;
         
         const btn = document.getElementById('musicToggle');
         
         if (this.isMusicPlaying) {
-            // Arrêter avec fade out
-            this.fadeOut(() => {
-                this.backgroundMusic.pause();
-                this.isMusicPlaying = false;
-                btn.textContent = '🎵';
-                btn.classList.remove('playing');
-                
-                // Jouer le son d'arrêt
-                this.playSound('stopMusic');
-            });
+            this.stopMusic();
+            btn.textContent = '🎵';
+            btn.classList.remove('playing');
+            btn.title = 'Lancer la musique';
         } else {
-            // Démarrer avec fade in
-            this.isMusicPlaying = true;
+            this.startMusic();
             btn.textContent = '⏸️';
             btn.classList.add('playing');
+            btn.title = 'Mettre en pause';
+        }
+    }
+    
+    startMusic() {
+        if (!this.currentMusic || this.isMusicPlaying) return;
+        
+        try {
+            this.currentMusic.volume = 0;
+            const playPromise = this.currentMusic.play();
             
-            const playPromise = this.backgroundMusic.play();
             if (playPromise !== undefined) {
                 playPromise
-                    .then(() => this.fadeIn())
+                    .then(() => {
+                        this.isMusicPlaying = true;
+                        this.fadeVolume(this.currentMusic, 0, this.musicVolume, 2000);
+                    })
                     .catch(error => {
                         console.warn('Autoplay musique bloqué:', error);
-                        this.isMusicPlaying = false;
-                        btn.textContent = '🎵';
-                        btn.classList.remove('playing');
-                        
-                        // Afficher un message à l'utilisateur
                         if (window.app) {
-                            window.app.showToast('Clique à nouveau pour démarrer la musique', 'info');
+                            window.app.showToast('Clique à nouveau pour la musique', 'info');
                         }
                     });
             }
+        } catch (error) {
+            console.warn('Erreur démarrage musique:', error);
         }
     }
     
-    // Fade in de la musique
-    fadeIn() {
-        if (!this.backgroundMusic) return;
+    stopMusic() {
+        if (!this.currentMusic || !this.isMusicPlaying) return;
         
-        const targetVolume = this.musicVolume;
-        const duration = 2000; // 2 secondes
-        const steps = 50;
-        const increment = targetVolume / steps;
-        const interval = duration / steps;
+        this.fadeVolume(this.currentMusic, this.currentMusic.volume, 0, 1500).then(() => {
+            this.currentMusic.pause();
+            this.isMusicPlaying = false;
+            this.playSound('stopMusic');
+        });
+    }
+    
+    // Changement de musique avec grésillement radio
+    async nextMusic() {
+        if (this.backgroundMusics.length <= 1 || this.isTransitioning) return;
         
-        let currentStep = 0;
-        const fadeInterval = setInterval(() => {
-            if (currentStep >= steps || !this.isMusicPlaying) {
-                clearInterval(fadeInterval);
-                if (this.isMusicPlaying) {
-                    this.backgroundMusic.volume = targetVolume;
+        this.isTransitioning = true;
+        
+        const wasPlaying = this.isMusicPlaying;
+        const oldMusic = this.currentMusic;
+        
+        // Passer à la musique suivante
+        this.currentMusicIndex = (this.currentMusicIndex + 1) % this.backgroundMusics.length;
+        const newMusic = this.backgroundMusics[this.currentMusicIndex];
+        
+        console.log(`🎵 Changement: Track ${this.currentMusicIndex + 1}/${this.backgroundMusics.length}`);
+        
+        if (wasPlaying) {
+            // Fade out de l'ancienne musique (300ms)
+            await this.fadeVolume(oldMusic, oldMusic.volume, 0, 300);
+            oldMusic.pause();
+            
+            // Grésillement radio (500ms max)
+            this.playSound('changeMusic');
+            await this.sleep(500);
+            
+            // Fade in de la nouvelle musique (300ms)
+            this.currentMusic = newMusic;
+            this.currentMusic.volume = 0;
+            
+            try {
+                await this.currentMusic.play();
+                await this.fadeVolume(this.currentMusic, 0, this.musicVolume, 300);
+            } catch (error) {
+                console.warn('Erreur nouvelle musique:', error);
+            }
+        } else {
+            this.currentMusic = newMusic;
+        }
+        
+        this.isTransitioning = false;
+    }
+    
+    // Fade volume progressif
+    fadeVolume(audioElement, startVol, endVol, duration) {
+        return new Promise(resolve => {
+            const steps = 20;
+            const stepDuration = duration / steps;
+            const volumeStep = (endVol - startVol) / steps;
+            let currentStep = 0;
+            
+            const interval = setInterval(() => {
+                currentStep++;
+                audioElement.volume = Math.max(0, Math.min(1, startVol + (volumeStep * currentStep)));
+                
+                if (currentStep >= steps) {
+                    clearInterval(interval);
+                    audioElement.volume = endVol;
+                    resolve();
                 }
-                return;
-            }
-            
-            this.backgroundMusic.volume = Math.min(increment * currentStep, targetVolume);
-            currentStep++;
-        }, interval);
+            }, stepDuration);
+        });
     }
     
-    // Fade out de la musique
-    fadeOut(callback) {
-        if (!this.backgroundMusic) return;
-        
-        const startVolume = this.backgroundMusic.volume;
-        const duration = 1500; // 1.5 secondes
-        const steps = 50;
-        const decrement = startVolume / steps;
-        const interval = duration / steps;
-        
-        let currentStep = 0;
-        const fadeInterval = setInterval(() => {
-            if (currentStep >= steps) {
-                clearInterval(fadeInterval);
-                this.backgroundMusic.volume = 0;
-                if (callback) callback();
-                return;
-            }
-            
-            this.backgroundMusic.volume = Math.max(startVolume - (decrement * currentStep), 0);
-            currentStep++;
-        }, interval);
+    sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
     }
     
-    // Définir le volume de la musique
     setMusicVolume(value) {
         this.musicVolume = value / 100;
-        document.getElementById('musicVolumeValue').textContent = value + '%';
         
-        if (this.backgroundMusic && this.isMusicPlaying) {
-            this.backgroundMusic.volume = this.musicVolume;
+        if (this.currentMusic && this.isMusicPlaying) {
+            this.currentMusic.volume = this.musicVolume;
+        }
+        
+        const valueSpan = document.getElementById('musicVolumeValue');
+        if (valueSpan) {
+            valueSpan.textContent = `${value}%`;
         }
     }
     
-    // Définir le volume des effets sonores
     setSfxVolume(value) {
         this.sfxVolume = value / 100;
-        document.getElementById('sfxVolumeValue').textContent = value + '%';
         
-        // Mettre à jour le volume de tous les sons
         for (const sound of Object.values(this.sounds)) {
             sound.volume = this.sfxVolume;
         }
+        
+        const valueSpan = document.getElementById('sfxVolumeValue');
+        if (valueSpan) {
+            valueSpan.textContent = `${value}%`;
+        }
     }
     
-    // Toggle mute
     toggleMute() {
         this.isMuted = !this.isMuted;
         const btn = document.getElementById('muteToggle');
         
         if (this.isMuted) {
+            if (this.currentMusic) {
+                this.currentMusic.volume = 0;
+            }
             btn.textContent = '🔇';
-            btn.classList.add('muted');
-            if (this.backgroundMusic) {
-                this.backgroundMusic.muted = true;
-            }
+            btn.title = 'Réactiver le son';
         } else {
-            btn.textContent = '🔊';
-            btn.classList.remove('muted');
-            if (this.backgroundMusic) {
-                this.backgroundMusic.muted = false;
+            if (this.currentMusic && this.isMusicPlaying) {
+                this.currentMusic.volume = this.musicVolume;
             }
+            btn.textContent = '🔊';
+            btn.title = 'Couper tous les sons';
         }
     }
+    
+    // Méthodes raccourcies pour le débat
+    playDebateStart() { this.playSound('debateStart'); }
+    playDebateEnd() { this.playSound('debatEnd'); }
+    playClock() { this.playSound('clock'); }
+    playLastVote() { this.playSound('lastVote'); }
+    playMessageSignaled() { this.playSound('messageSignaled'); }
+    playSpam() { this.playSound('spam'); }
 }
+
+// ============================================
+// Gestionnaire de Retour Haptique
+// ============================================
+
+class HapticFeedback {
+    constructor() {
+        // Vérifier si l'API Vibration est disponible
+        this.isSupported = 'vibrate' in navigator;
+        this.isEnabled = true; // Actif par défaut
+        
+        console.log('📳 HapticFeedback:', this.isSupported ? 'Disponible' : 'Non supporté');
+    }
+    
+    // Vibrations prédéfinies
+    vibrate(pattern) {
+        if (!this.isSupported || !this.isEnabled) return;
+        
+        try {
+            navigator.vibrate(pattern);
+        } catch (error) {
+            console.warn('Erreur vibration:', error);
+        }
+    }
+    
+    // === INTERACTIONS LÉGÈRES ===
+    tap() {
+        // Tap léger : bouton, sélection
+        this.vibrate(10);
+    }
+    
+    click() {
+        // Click normal : validation simple
+        this.vibrate(15);
+    }
+    
+    // === FEEDBACK MOYEN ===
+    success() {
+        // Action réussie : vote enregistré, message envoyé
+        this.vibrate([20, 10, 20]);
+    }
+    
+    error() {
+        // Erreur : cooldown, action impossible
+        this.vibrate([50, 30, 50]);
+    }
+    
+    warning() {
+        // Attention : spam, limite atteinte
+        this.vibrate([30, 20, 30, 20, 30]);
+    }
+    
+    // === MOMENTS CLÉS ===
+    notification() {
+        // Notification importante : nouveau message
+        this.vibrate([15, 50, 15]);
+    }
+    
+    countdown() {
+        // Countdown urgent (<5s)
+        this.vibrate([100, 50, 100]);
+    }
+    
+    climax() {
+        // Moment intense : fin débat, dernier vote, victoire
+        this.vibrate([30, 30, 30, 30, 100]);
+    }
+    
+    celebration() {
+        // Célébration : gagné le débat
+        this.vibrate([50, 100, 50, 100, 50, 100, 200]);
+    }
+    
+    // === DÉBAT SPÉCIFIQUE ===
+    debateStart() {
+        // Début du débat
+        this.vibrate([50, 30, 50, 30, 100]);
+    }
+    
+    debateEnd() {
+        // Fin du débat
+        this.vibrate([100, 50, 100]);
+    }
+    
+    leaderChange() {
+        // Changement de leader pendant vote
+        this.vibrate([40, 20, 40, 20, 40]);
+    }
+    
+    lastSeconds() {
+        // <10 secondes
+        this.vibrate([80]);
+    }
+    
+    // === CONTRÔLE ===
+    enable() {
+        this.isEnabled = true;
+    }
+    
+    disable() {
+        this.isEnabled = false;
+    }
+    
+    toggle() {
+        this.isEnabled = !this.isEnabled;
+        return this.isEnabled;
+    }
+}
+
+// ============================================
+// Application Principale
+// ============================================
 
 class MurDeParole {
     constructor() {
@@ -289,6 +511,9 @@ class MurDeParole {
         
         // Initialiser l'audio
         this.audio = new AudioManager();
+        
+        // Initialiser le retour haptique
+        this.haptic = new HapticFeedback();
         
         // 🎭 Module Débat Live
         this.debateModule = null;
