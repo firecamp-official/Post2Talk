@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Post2Talk - Avec Module Débat Live</title>
+    
+    <!-- Styles existants -->
+    <link rel="stylesheet" href="styles.css">
+    
+    <!-- 🎭 Styles du module débat -->
+    <link rel="stylesheet" href="debateModule.css">
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- Background pixel pattern -->
+    <div class="pixel-bg"></div>
+    
+    <!-- Header (avec le badge débat qui sera ajouté dynamiquement) -->
+    <header class="header">
+        <div class="container">
+            <h1 class="logo">
+                <span class="pixel-icon">📌</span>
+                Post2Talk
+                <span class="pixel-icon">📌</span>
+            </h1>
+            <p class="subtitle">Partage tes idées sur le tableau de liège pixel !</p>
+            <!-- Le badge débat sera inséré ici automatiquement -->
+        </div>
+    </header>
+
+    <!-- Main container -->
+    <div class="container main-container">
+        
+        <!-- Actions panel -->
+        <div class="actions-panel">
+            <button class="pixel-btn primary" id="addPostItBtn">
+                ➕ Nouveau Post-it
+            </button>
+            <button class="pixel-btn secondary" id="createDebateBtn">
+                💬 Créer un Débat
+            </button>
+            <button class="pixel-btn tertiary" id="refreshBtn">
+                🔄 Rafraîchir
+            </button>
+            <div class="status-indicator">
+                <span class="status-dot"></span>
+                <span id="statusText">Chargement...</span>
+            </div>
+        </div>
+
+        <!-- Cork board -->
+        <div class="recent-messages-section" id="recentMessagesSection">
+            <div class="recent-messages-header">
+                <span class="recent-icon">🆕</span>
+                <h3>3 Derniers Messages</h3>
+                <span class="recent-icon">🆕</span>
+            </div>
+            <div class="recent-messages-container" id="recentMessagesContainer">
+                <div class="recent-message-placeholder">
+                    Aucun message récent...
+                </div>
+            </div>
+        </div>
+        
+        <div class="cork-board" id="corkBoard">
+            <div class="board-label">Tableau de Liège</div>
+            
+            <div class="drop-zone-hint">
+                🖱️ Glisse tes post-its ici (PC) ou clique pour ajouter (mobile)
+            </div>
+        </div>
+
+        <!-- Debates section -->
+        <div class="debates-section" id="debatesSection">
+            <h2 class="section-title">💭 Zones de Débat</h2>
+            <div class="debates-container" id="debatesContainer">
+                <!-- Debates will be dynamically added here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Modals (existants) -->
+    <div class="modal" id="postItModal">
+        <div class="modal-content pixel-box">
+            <button class="close-btn" id="closePostItModal">✖</button>
+            <h2 class="modal-title">✏️ Nouveau Post-it</h2>
+            <form id="postItForm">
+                <div class="form-group">
+                    <label for="postItText">Message (max 120 caractères)</label>
+                    <textarea 
+                        id="postItText" 
+                        maxlength="120" 
+                        rows="4" 
+                        placeholder="Écris ton message ici..."
+                        required
+                    ></textarea>
+                    <div class="char-counter">
+                        <span id="charCount">0</span>/120
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Couleur du post-it</label>
+                    <div class="color-picker">
+                        <label class="color-option" style="background: #FFE87C">
+                            <input type="radio" name="color" value="#FFE87C" checked>
+                            <span class="checkmark">✓</span>
+                        </label>
+                        <label class="color-option" style="background: #FF9ECD">
+                            <input type="radio" name="color" value="#FF9ECD">
+                            <span class="checkmark">✓</span>
+                        </label>
+                        <label class="color-option" style="background: #AEE8FF">
+                            <input type="radio" name="color" value="#AEE8FF">
+                            <span class="checkmark">✓</span>
+                        </label>
+                        <label class="color-option" style="background: #B4FF9F">
+                            <input type="radio" name="color" value="#B4FF9F">
+                            <span class="checkmark">✓</span>
+                        </label>
+                        <label class="color-option" style="background: #FFCBA4">
+                            <input type="radio" name="color" value="#FFCBA4">
+                            <span class="checkmark">✓</span>
+                        </label>
+                    </div>
+                </div>
+                <button type="submit" class="pixel-btn primary full-width">
+                    📌 Ajouter au tableau
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <div class="modal" id="debateModal">
+        <div class="modal-content pixel-box">
+            <button class="close-btn" id="closeDebateModal">✖</button>
+            <h2 class="modal-title">💬 Nouveau Débat</h2>
+            <form id="debateForm">
+                <div class="form-group">
+                    <label for="debateTitle">Titre du débat (max 60 caractères)</label>
+                    <input 
+                        type="text" 
+                        id="debateTitle" 
+                        maxlength="60" 
+                        placeholder="Ex: Quelle est la meilleure pizza ?"
+                        required
+                    >
+                </div>
+                <div class="form-group">
+                    <label for="debateDesc">Description (max 120 caractères)</label>
+                    <textarea 
+                        id="debateDesc" 
+                        maxlength="120" 
+                        rows="3" 
+                        placeholder="Explique le sujet du débat..."
+                        required
+                    ></textarea>
+                </div>
+                <button type="submit" class="pixel-btn primary full-width">
+                    🚀 Créer le débat
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <div class="modal" id="debateInteractModal">
+        <div class="modal-content pixel-box">
+            <button class="close-btn" id="closeDebateInteractModal">✖</button>
+            <h2 class="modal-title" id="debateInteractTitle">💬 Débat</h2>
+            <p class="debate-description" id="debateInteractDesc"></p>
+            
+            <div class="debate-votes">
+                <button class="vote-btn upvote" id="upvoteBtn">
+                    👍 <span id="upvoteCount">0</span>
+                </button>
+                <button class="vote-btn downvote" id="downvoteBtn">
+                    👎 <span id="downvoteCount">0</span>
+                </button>
+            </div>
+
+            <form id="debateCommentForm">
+                <div class="form-group">
+                    <label for="debateComment">Ton avis (max 120 caractères)</label>
+                    <textarea 
+                        id="debateComment" 
+                        maxlength="120" 
+                        rows="3" 
+                        placeholder="Partage ton opinion..."
+                        required
+                    ></textarea>
+                </div>
+                <button type="submit" class="pixel-btn primary full-width">
+                    💬 Poster ton avis
+                </button>
+            </form>
+
+            <div class="debate-comments" id="debateComments">
+                <!-- Comments will be loaded here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast notifications -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <!-- Scripts originaux -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="config.js"></script>
+    <script src="profanityFilter.js"></script>
+    <script src="supabaseClient.js"></script>
+    <script src="app.js"></script>
+    
+    <!-- 🎭 Module Débat Live -->
+    <script src="debateModule.js"></script>
+
+</body>
+</html>
