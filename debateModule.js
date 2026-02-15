@@ -136,11 +136,6 @@ class DebateModule {
         setInterval(() => {
             this.updateTimerOnly();
         }, 1000);
-        
-        // Cleanup périodique (toutes les 2 minutes)
-        setInterval(async () => {
-            await this.cleanupOldSessions();
-        }, 120000); // 2 minutes
 
         // Heartbeat optimisé (2s) - Compromis entre réactivité et requêtes
         setInterval(async () => {
@@ -698,63 +693,49 @@ class DebateModule {
         try {
             console.log('[DEBATE] 🧹 Nettoyage des sessions zombies...');
             
-            // Récupérer toutes les sessions actives
-            const { data: sessions, error } = await this.client.client
+            const now = Date.now();
+            
+            // Calculer le timestamp limite (sessions plus vieilles que ça = zombies)
+            const maxSessionTime = 
+                this.config.stabilizationTime +
+                this.config.countdownTime +
+                this.config.questionTime +
+                this.config.debateTime +
+                this.config.votingTime +
+                this.config.resultTime +
+                60000; // +1 minute de marge
+            
+            const maxAge = now - maxSessionTime;
+            const waitingMaxAge = now - 300000; // 5 min pour WAITING
+            
+            // UNE SEULE requête : désactiver directement par timestamp
+            // Utilise la colonne created_at au lieu de parser le JSON
+            const { error } = await this.client.client
                 .from('debate_sessions')
-                .select('*')
-                .eq('is_active', true);
+                .update({ is_active: false })
+                .eq('is_active', true)
+                .or(`created_at.lt.${new Date(maxAge).toISOString()},and(state.eq.WAITING,created_at.lt.${new Date(waitingMaxAge).toISOString()})`);
             
             if (error) throw error;
-            if (!sessions || sessions.length === 0) {
-                console.log('[DEBATE] ✅ Aucune session à nettoyer');
-                return;
-            }
             
-            const now = Date.now();
-            const sessionsToClean = [];
-            
-            for (const session of sessions) {
-                const data = JSON.parse(session.data || '{}');
-                const stateStartTime = data.stateStartTime || 0;
-                const age = now - stateStartTime;
-                
-                // Calculer le temps max théorique d'une session
-                const maxSessionTime = 
-                    this.config.stabilizationTime +
-                    this.config.countdownTime +
-                    this.config.questionTime +
-                    this.config.debateTime +
-                    this.config.votingTime +
-                    this.config.resultTime +
-                    60000; // +1 minute de marge
-                
-                // Session zombie : trop vieille OU WAITING depuis >5 minutes
-                const isZombie = age > maxSessionTime || 
-                    (session.state === 'WAITING' && age > 300000); // 5 min en WAITING
-                
-                if (isZombie) {
-                    sessionsToClean.push(session.id);
-                    console.log(`[DEBATE] 🧟 Session zombie détectée: ${session.id} (âge: ${Math.floor(age/1000)}s, état: ${session.state})`);
-                }
-            }
-            
-            // Nettoyer les sessions zombies
-            if (sessionsToClean.length > 0) {
-                const { error: cleanError } = await this.client.client
-                    .from('debate_sessions')
-                    .update({ is_active: false })
-                    .in('id', sessionsToClean);
-                
-                if (cleanError) throw cleanError;
-                
-                console.log(`[DEBATE] ✅ ${sessionsToClean.length} session(s) zombie(s) nettoyée(s)`);
-            } else {
-                console.log('[DEBATE] ✅ Aucune session zombie à nettoyer');
-            }
+            console.log('[DEBATE] ✅ Sessions zombies nettoyées (1 requête optimisée)');
             
         } catch (error) {
             console.error('[DEBATE] Erreur cleanup:', error);
-            // Ne pas bloquer l'ouverture si le cleanup échoue
+            // Fallback : cleanup simple si la requête complexe échoue
+            try {
+                // Juste désactiver les sessions vraiment vieilles (>10 min)
+                const tenMinAgo = new Date(Date.now() - 600000).toISOString();
+                await this.client.client
+                    .from('debate_sessions')
+                    .update({ is_active: false })
+                    .eq('is_active', true)
+                    .lt('created_at', tenMinAgo);
+                
+                console.log('[DEBATE] ✅ Cleanup fallback appliqué');
+            } catch (fallbackError) {
+                console.error('[DEBATE] Erreur cleanup fallback:', fallbackError);
+            }
         }
     }
 
