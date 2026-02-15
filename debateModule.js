@@ -237,6 +237,27 @@ class DebateModule {
         const secs = Math.floor(remaining / 1000);
         const mins = Math.floor(secs / 60);
         timer.textContent = `${mins}:${(secs % 60).toString().padStart(2, '0')}`;
+        
+        // HYPE : États visuels selon l'urgence
+        timer.classList.remove('timer-normal', 'timer-warning', 'timer-critical');
+        
+        if (secs <= 10) {
+            timer.classList.add('timer-critical'); // Rouge, pulse rapide
+        } else if (secs <= 30) {
+            timer.classList.add('timer-warning'); // Orange, pulse moyen
+        } else {
+            timer.classList.add('timer-normal'); // Normal
+        }
+        
+        // HYPE : Badge LIVE pulse plus vite si <30s pendant DEBATE
+        const badge = document.getElementById('debateBadge');
+        if (badge) {
+            if (this.currentState === 'DEBATE' && secs <= 30) {
+                badge.classList.add('pulse-fast');
+            } else {
+                badge.classList.remove('pulse-fast');
+            }
+        }
     }
 
     updateMyRole() {
@@ -696,6 +717,10 @@ class DebateModule {
             if (this.audio) {
                 this.audio.playSound('afterVoting');
             }
+            
+            // HYPE : Vérifier si changement de leader
+            this.checkAndAnnounceLeaderChange();
+            
         } catch (error) {
             console.error('[DEBATE] Erreur vote:', error);
         }
@@ -934,32 +959,78 @@ class DebateModule {
         const count = badge.querySelector('.debate-participant-count');
 
         const participantCount = this.sessionData.participants?.length || 0;
-        count.textContent = participantCount;
-
-        badge.classList.remove('waiting', 'stabilizing', 'active', 'voting');
+        
+        badge.classList.remove('waiting', 'stabilizing', 'active', 'voting', 'hype-high');
 
         switch (this.currentState) {
             case 'WAITING':
                 badge.classList.add('waiting');
-                text.textContent = 'Lobby';
+                if (participantCount === 0) {
+                    text.textContent = 'Lobby vide';
+                    count.textContent = '';
+                } else if (participantCount < 4) {
+                    text.textContent = 'En attente...';
+                    count.textContent = `${participantCount}`;
+                } else {
+                    text.textContent = 'Prêt !';
+                    count.textContent = `${participantCount} 🔥`;
+                }
                 break;
+                
             case 'STABILIZING':
             case 'COUNTDOWN':
                 badge.classList.add('stabilizing');
-                text.textContent = 'Démarrage...';
+                text.textContent = 'Ça démarre !';
+                count.textContent = `${participantCount}`;
                 break;
+                
             case 'QUESTION':
-            case 'DEBATE':
                 badge.classList.add('active');
                 text.textContent = '🔴 LIVE';
+                count.textContent = `${participantCount} regardent`;
                 break;
+                
+            case 'DEBATE':
+                badge.classList.add('active');
+                // Wording dynamique selon le nombre
+                if (participantCount < 5) {
+                    text.textContent = '🔴 LIVE';
+                    count.textContent = `${participantCount}`;
+                } else if (participantCount < 10) {
+                    text.textContent = '🔴 Ça débat !';
+                    count.textContent = `${participantCount}`;
+                    badge.classList.add('hype-high');
+                } else {
+                    text.textContent = '🔴 Ça chauffe ! 🔥';
+                    count.textContent = `${participantCount}`;
+                    badge.classList.add('hype-high');
+                }
+                break;
+                
             case 'VOTING':
                 badge.classList.add('voting');
-                text.textContent = 'Vote';
+                const totalVotes = Object.keys(this.sessionData.votes || {}).length;
+                const spectatorCount = this.sessionData.spectators?.length || 0;
+                
+                if (spectatorCount > 0) {
+                    const voteRate = Math.round((totalVotes / spectatorCount) * 100);
+                    if (voteRate > 70) {
+                        text.textContent = 'Vote bouillant ! 🔥';
+                        badge.classList.add('hype-high');
+                    } else {
+                        text.textContent = 'Vote en cours';
+                    }
+                    count.textContent = `${totalVotes}/${spectatorCount}`;
+                } else {
+                    text.textContent = 'Vote';
+                    count.textContent = `${totalVotes}`;
+                }
                 break;
+                
             case 'RESULT':
                 badge.classList.add('active');
-                text.textContent = 'Résultat';
+                text.textContent = 'Résultat ! 🏆';
+                count.textContent = `${participantCount}`;
                 break;
         }
     }
@@ -1165,6 +1236,90 @@ class DebateModule {
         const voteCount = document.querySelector('.debate-vote-count');
         if (voteCount) {
             voteCount.textContent = `Total : ${totalVotes} ${totalVotes > 1 ? 'votes' : 'vote'}`;
+        }
+    }
+    
+    // ============================================
+    // HYPE : JAUGE D'INTENSITÉ & POINT DE BASCULE
+    // ============================================
+    
+    renderVoteTensionGauge() {
+        const votes1 = Object.values(this.sessionData.votes).filter(v => v === 'lawyer1').length;
+        const votes2 = Object.values(this.sessionData.votes).filter(v => v === 'lawyer2').length;
+        const totalVotes = votes1 + votes2;
+        
+        if (totalVotes === 0) return '';
+        
+        // Calculer la tension (plus c'est serré, plus c'est tendu)
+        const ratio = votes1 / (votes1 + votes2);
+        const tension = Math.round((1 - Math.abs(ratio - 0.5) * 2) * 100);
+        
+        // Nombre de barres pleines sur 10
+        const filledBars = Math.round((tension / 100) * 10);
+        const bars = '█'.repeat(filledBars) + '░'.repeat(10 - filledBars);
+        
+        // Couleur selon la tension
+        let tensionClass = 'low';
+        let tensionText = 'Tranquille';
+        if (tension > 70) {
+            tensionClass = 'extreme';
+            tensionText = 'Extrême ! 🔥';
+        } else if (tension > 50) {
+            tensionClass = 'high';
+            tensionText = 'Intense !';
+        } else if (tension > 30) {
+            tensionClass = 'medium';
+            tensionText = 'Modérée';
+        }
+        
+        return `
+            <div class="debate-tension-gauge tension-${tensionClass}">
+                <div class="tension-label">
+                    <span class="tension-icon">⚡</span>
+                    <span>Intensité : ${tensionText}</span>
+                </div>
+                <div class="tension-bar-container">
+                    <div class="tension-bar-bg">${bars}</div>
+                    <div class="tension-percentage">${tension}%</div>
+                </div>
+            </div>
+        `;
+    }
+    
+    checkAndAnnounceLeaderChange() {
+        const votes1 = Object.values(this.sessionData.votes).filter(v => v === 'lawyer1').length;
+        const votes2 = Object.values(this.sessionData.votes).filter(v => v === 'lawyer2').length;
+        
+        // Stocker le leader précédent
+        if (!this.previousLeader) {
+            this.previousLeader = votes1 > votes2 ? 'lawyer1' : votes2 > votes1 ? 'lawyer2' : null;
+            return;
+        }
+        
+        const currentLeader = votes1 > votes2 ? 'lawyer1' : votes2 > votes1 ? 'lawyer2' : null;
+        
+        // Si changement de leader
+        if (currentLeader && currentLeader !== this.previousLeader) {
+            const lawyerName = currentLeader === 'lawyer1' ? 'Avocat 1' : 'Avocat 2';
+            
+            // Toast flash
+            this.showDebateToast(`🔄 ${lawyerName} reprend l'avantage !`, 'info');
+            
+            // Son si disponible
+            if (this.audio) {
+                this.audio.playSound('setPostIt');
+            }
+            
+            // Animation flash
+            const mainArea = document.getElementById('debateMainArea');
+            if (mainArea) {
+                mainArea.classList.add('leader-change-flash');
+                setTimeout(() => {
+                    mainArea.classList.remove('leader-change-flash');
+                }, 500);
+            }
+            
+            this.previousLeader = currentLeader;
         }
     }
 
@@ -1467,6 +1622,8 @@ class DebateModule {
 
         mainArea.innerHTML = `
             <div class="debate-voting-screen">
+                ${this.renderVoteTensionGauge()}
+                
                 <h2>🗳️ À toi de voter !</h2>
                 <p class="debate-question-reminder">Question : ${this.sessionData.question}</p>
                 
