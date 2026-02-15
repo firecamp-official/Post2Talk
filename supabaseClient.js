@@ -144,6 +144,23 @@ class SupabaseClient {
         }
         
         try {
+            // Vérifier d'abord si l'utilisateur a déjà signalé ce post-it
+            const { data: existingReport } = await this.client
+                .from('reports')
+                .select('*')
+                .eq('postit_id', postItId)
+                .eq('user_id', userId)
+                .single();
+            
+            if (existingReport) {
+                // L'utilisateur a déjà signalé ce post-it
+                return { 
+                    success: false, 
+                    error: 'Tu as déjà signalé ce message',
+                    alreadyReported: true 
+                };
+            }
+            
             // Créer le signalement
             const { error: reportError } = await this.client
                 .from('reports')
@@ -153,7 +170,18 @@ class SupabaseClient {
                     created_at: new Date().toISOString()
                 });
             
-            if (reportError) throw reportError;
+            // Gérer l'erreur de duplicate (au cas où race condition)
+            if (reportError) {
+                if (reportError.code === '23505') {
+                    // Duplicate key - l'utilisateur a déjà signalé
+                    return { 
+                        success: false, 
+                        error: 'Tu as déjà signalé ce message',
+                        alreadyReported: true 
+                    };
+                }
+                throw reportError;
+            }
             
             // Compter les signalements
             const { data: reports, error: countError } = await this.client
