@@ -136,6 +136,11 @@ class DebateModule {
         setInterval(() => {
             this.updateTimerOnly();
         }, 1000);
+        
+        // Cleanup périodique (toutes les 2 minutes)
+        setInterval(async () => {
+            await this.cleanupOldSessions();
+        }, 120000); // 2 minutes
 
         // Heartbeat optimisé (2s) - Compromis entre réactivité et requêtes
         setInterval(async () => {
@@ -684,6 +689,74 @@ class DebateModule {
             console.error('[DEBATE] Erreur vote:', error);
         }
     }
+    
+    // ============================================
+    // CLEANUP AUTOMATIQUE
+    // ============================================
+    
+    async cleanupOldSessions() {
+        try {
+            console.log('[DEBATE] 🧹 Nettoyage des sessions zombies...');
+            
+            // Récupérer toutes les sessions actives
+            const { data: sessions, error } = await this.client.client
+                .from('debate_sessions')
+                .select('*')
+                .eq('is_active', true);
+            
+            if (error) throw error;
+            if (!sessions || sessions.length === 0) {
+                console.log('[DEBATE] ✅ Aucune session à nettoyer');
+                return;
+            }
+            
+            const now = Date.now();
+            const sessionsToClean = [];
+            
+            for (const session of sessions) {
+                const data = JSON.parse(session.data || '{}');
+                const stateStartTime = data.stateStartTime || 0;
+                const age = now - stateStartTime;
+                
+                // Calculer le temps max théorique d'une session
+                const maxSessionTime = 
+                    this.config.stabilizationTime +
+                    this.config.countdownTime +
+                    this.config.questionTime +
+                    this.config.debateTime +
+                    this.config.votingTime +
+                    this.config.resultTime +
+                    60000; // +1 minute de marge
+                
+                // Session zombie : trop vieille OU WAITING depuis >5 minutes
+                const isZombie = age > maxSessionTime || 
+                    (session.state === 'WAITING' && age > 300000); // 5 min en WAITING
+                
+                if (isZombie) {
+                    sessionsToClean.push(session.id);
+                    console.log(`[DEBATE] 🧟 Session zombie détectée: ${session.id} (âge: ${Math.floor(age/1000)}s, état: ${session.state})`);
+                }
+            }
+            
+            // Nettoyer les sessions zombies
+            if (sessionsToClean.length > 0) {
+                const { error: cleanError } = await this.client.client
+                    .from('debate_sessions')
+                    .update({ is_active: false })
+                    .in('id', sessionsToClean);
+                
+                if (cleanError) throw cleanError;
+                
+                console.log(`[DEBATE] ✅ ${sessionsToClean.length} session(s) zombie(s) nettoyée(s)`);
+            } else {
+                console.log('[DEBATE] ✅ Aucune session zombie à nettoyer');
+            }
+            
+        } catch (error) {
+            console.error('[DEBATE] Erreur cleanup:', error);
+            // Ne pas bloquer l'ouverture si le cleanup échoue
+        }
+    }
 
     // ============================================
     // OUVERTURE/FERMETURE
@@ -691,6 +764,9 @@ class DebateModule {
 
     async openDebateModule() {
         console.log('[DEBATE] Ouverture du module');
+
+        // CLEANUP : Nettoyer les sessions zombies avant de commencer
+        await this.cleanupOldSessions();
 
         // Si pas de session active, en créer une
         if (!this.currentSessionId) {
