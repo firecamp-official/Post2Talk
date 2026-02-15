@@ -1,33 +1,27 @@
 <!DOCTYPE html>
 <html lang="fr">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Post2Talk - Avec Module Débat Live</title>
-    
+
     <!-- Styles existants -->
     <link rel="stylesheet" href="styles.css">
-    
+
     <!-- 🎭 Styles du module débat -->
     <link rel="stylesheet" href="debateModule.css">
-<link rel="icon" type="image/png" sizes="32x32" href="./favicon/favicon-32x32.png">
-<link rel="icon" type="image/png" sizes="16x16" href="./favicon/favicon-16x16.png">
-<link rel="apple-touch-icon" sizes="180x180" href="./favicon/apple-touch-icon-180x180.png">
-<link rel="apple-touch-icon" sizes="152x152" href="./favicon/apple-touch-icon-152x152.png">
-<link rel="apple-touch-icon" sizes="120x120" href="./favicon/apple-touch-icon-120x120.png">
-<link rel="icon" type="image/png" sizes="192x192" href="./favicon/android-chrome-192x192.png">
-<link rel="icon" type="image/png" sizes="512x512" href="./favicon/android-chrome-512x512.png">
-<meta name="msapplication-TileImage" content="/mstile-144x144.png">
-<meta name="msapplication-TileColor" content="#ffffff">
+
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
 </head>
+
 <body>
     <!-- Background pixel pattern -->
     <div class="pixel-bg"></div>
-    
+
     <!-- Header (avec le badge débat qui sera ajouté dynamiquement) -->
     <header class="header">
         <div class="container">
@@ -36,14 +30,14 @@
                 Post2Talk
                 <span class="pixel-icon">📌</span>
             </h1>
-            <p class="subtitle">Partage tes idées sur le tableau !</p>
+            <p class="subtitle">Partage tes idées sur le tableau de liège pixel !</p>
             <!-- Le badge débat sera inséré ici automatiquement -->
         </div>
     </header>
 
     <!-- Main container -->
     <div class="container main-container">
-        
+
         <!-- Actions panel -->
         <div class="actions-panel">
             <button class="pixel-btn primary" id="addPostItBtn">
@@ -74,10 +68,10 @@
                 </div>
             </div>
         </div>
-        
+
         <div class="cork-board" id="corkBoard">
             <div class="board-label">Tableau de Liège</div>
-            
+
             <div class="drop-zone-hint">
                 🖱️ Glisse tes post-its ici (PC) ou clique pour ajouter (mobile)
             </div>
@@ -100,13 +94,8 @@
             <form id="postItForm">
                 <div class="form-group">
                     <label for="postItText">Message (max 120 caractères)</label>
-                    <textarea 
-                        id="postItText" 
-                        maxlength="120" 
-                        rows="4" 
-                        placeholder="Écris ton message ici..."
-                        required
-                    ></textarea>
+                    <textarea id="postItText" maxlength="120" rows="4" placeholder="Écris ton message ici..."
+                        required></textarea>
                     <div class="char-counter">
                         <span id="charCount">0</span>/120
                     </div>
@@ -150,23 +139,13 @@
             <form id="debateForm">
                 <div class="form-group">
                     <label for="debateTitle">Titre du débat (max 60 caractères)</label>
-                    <input 
-                        type="text" 
-                        id="debateTitle" 
-                        maxlength="60" 
-                        placeholder="Ex: Quelle est la meilleure pizza ?"
-                        required
-                    >
+                    <input type="text" id="debateTitle" maxlength="60" placeholder="Ex: Quelle est la meilleure pizza ?"
+                        required>
                 </div>
                 <div class="form-group">
                     <label for="debateDesc">Description (max 120 caractères)</label>
-                    <textarea 
-                        id="debateDesc" 
-                        maxlength="120" 
-                        rows="3" 
-                        placeholder="Explique le sujet du débat..."
-                        required
-                    ></textarea>
+                    <textarea id="debateDesc" maxlength="120" rows="3" placeholder="Explique le sujet du débat..."
+                        required></textarea>
                 </div>
                 <button type="submit" class="pixel-btn primary full-width">
                     🚀 Créer le débat
@@ -180,7 +159,7 @@
             <button class="close-btn" id="closeDebateInteractModal">✖</button>
             <h2 class="modal-title" id="debateInteractTitle">💬 Débat</h2>
             <p class="debate-description" id="debateInteractDesc"></p>
-            
+
             <div class="debate-votes">
                 <button class="vote-btn upvote" id="upvoteBtn">
                     👍 <span id="upvoteCount">0</span>
@@ -193,13 +172,8 @@
             <form id="debateCommentForm">
                 <div class="form-group">
                     <label for="debateComment">Ton avis (max 120 caractères)</label>
-                    <textarea 
-                        id="debateComment" 
-                        maxlength="120" 
-                        rows="3" 
-                        placeholder="Partage ton opinion..."
-                        required
-                    ></textarea>
+                    <textarea id="debateComment" maxlength="120" rows="3" placeholder="Partage ton opinion..."
+                        required></textarea>
                 </div>
                 <button type="submit" class="pixel-btn primary full-width">
                     💬 Poster ton avis
@@ -221,12 +195,63 @@
     <script src="profanityFilter.js"></script>
     <script src="supabaseClient.js"></script>
     <script src="app.js"></script>
-    
+
     <!-- 🎭 Module Débat Live -->
     <script src="debateModule.js"></script>
+    <script>
+        // Ajouter les feedbacks haptiques aux actions importantes
+        document.addEventListener('DOMContentLoaded', () => {
+            setTimeout(() => {
+                if (!window.app || !window.app.haptic) return;
 
+                const haptic = window.app.haptic;
+
+                // === BOUTONS GÉNÉRAUX ===
+                document.addEventListener('click', (e) => {
+                    const target = e.target;
+
+                    // Tous les boutons
+                    if (target.tagName === 'BUTTON' || target.closest('button')) {
+                        haptic.tap();
+                    }
+
+                    // Audio toggle
+                    if (target.id === 'musicToggle') {
+                        haptic.click();
+                    }
+
+                    // Changement musique
+                    if (target.id === 'musicNext') {
+                        haptic.notification();
+                    }
+                });
+
+                // === POST-ITS ===
+                const originalShowToast = window.app.showToast;
+                window.app.showToast = function (message, type) {
+                    // Feedback selon le type
+                    switch (type) {
+                        case 'success':
+                            haptic.success();
+                            break;
+                        case 'error':
+                            haptic.error();
+                            break;
+                        case 'warning':
+                            haptic.warning();
+                            break;
+                        case 'info':
+                            haptic.notification();
+                            break;
+                    }
+
+                    return originalShowToast.call(this, message, type);
+                };
+
+                console.log('📳 Retour haptique activé');
+            }, 1000);
+        });
+    </script>
 </body>
 
 </html>
-
-
