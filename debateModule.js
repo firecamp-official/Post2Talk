@@ -134,53 +134,27 @@ class DebateModule {
     startGlobalHeartbeat() {
         // Timer local (1s) - SANS requête DB
         setInterval(() => {
-            const timer = document.getElementById('debateTimer');
-            if (!timer) return;
-
-            const elapsed = Date.now() - this.sessionData.stateStartTime;
-            let duration = 0;
-
-            switch (this.currentState) {
-                case 'STABILIZING': duration = this.config.stabilizationTime; break;
-                case 'COUNTDOWN': duration = this.config.countdownTime; break;
-                case 'TOPIC_SELECTION': duration = this.config.topicTime; break;
-                case 'DEBATE': duration = this.config.debateTime; break;
-                case 'VOTING': duration = this.config.votingTime; break;
-                case 'RESULT': duration = this.config.resultTime; break;
-            }
-
-            const remaining = Math.max(0, duration - elapsed);
-            const secs = Math.floor(remaining / 1000);
-            const mins = Math.floor(secs / 60);
-            timer.textContent = `${mins}:${(secs % 60).toString().padStart(2, '0')}`;
+            this.updateTimerOnly();
         }, 1000);
 
-        // Heartbeat LENT (5s) - AVEC requête DB
+        // Heartbeat optimisé (2s) - Compromis entre réactivité et requêtes
         setInterval(async () => {
             try {
-                // Ne PAS update si input focus
-                const activeElement = document.activeElement;
-                const isInputFocused = activeElement && (
-                    activeElement.tagName === 'INPUT' ||
-                    activeElement.tagName === 'TEXTAREA'
-                );
-
-                if (isInputFocused) {
-                    console.log('[DEBATE] Skip update - input focus');
-                    return; // Skip complètement
-                }
-
-                // Toujours vérifier s'il y a une session active
+                // Toujours récupérer les données
                 const { data: sessions } = await this.client.client
                     .from('debate_sessions')
                     .select('*')
                     .eq('is_active', true)
                     .limit(1);
 
+                const oldState = this.currentState;
+                const oldMessagesCount = this.sessionData.lawyerMessages.length + this.sessionData.spectatorMessages.length;
+
                 if (!sessions || sessions.length === 0) {
                     this.currentSessionId = null;
                     this.currentState = 'WAITING';
                     this.sessionData.participants = [];
+                    this.myRole = null;
                 } else {
                     const session = sessions[0];
                     this.currentSessionId = session.id;
@@ -200,31 +174,46 @@ class DebateModule {
                         stateStartTime: data.stateStartTime || Date.now()
                     };
 
-                    // Déterminer mon rôle
-                    if (this.sessionData.decisionnaire === this.userId) {
-                        this.myRole = 'decisionnaire';
-                    } else if (this.sessionData.lawyer1 === this.userId) {
-                        this.myRole = 'lawyer1';
-                    } else if (this.sessionData.lawyer2 === this.userId) {
-                        this.myRole = 'lawyer2';
-                    } else {
-                        this.myRole = 'spectator';
-                    }
+                    this.updateMyRole();
                 }
 
-                // Mettre à jour le badge
+                // Mettre à jour le badge (toujours)
                 this.updateBadge();
 
-                // Si la modale est ouverte, mettre à jour l'UI
+                // Décider comment mettre à jour l'UI
                 if (this.isActive) {
-                    this.updateUI();
+                    const activeElement = document.activeElement;
+                    const isInputFocused = activeElement && (
+                        activeElement.tagName === 'INPUT' ||
+                        activeElement.tagName === 'TEXTAREA'
+                    );
+
+                    const stateChanged = oldState !== this.currentState;
+                    const newMessagesCount = this.sessionData.lawyerMessages.length + this.sessionData.spectatorMessages.length;
+                    const messagesChanged = newMessagesCount !== oldMessagesCount;
+
+                    if (stateChanged) {
+                        // TOUJOURS update si changement d'état (même si input focus)
+                        this.updateUI();
+                    } else if (isInputFocused) {
+                        // Input focus : update SEULEMENT les messages (pas le DOM des inputs)
+                        if (messagesChanged && this.currentState === 'DEBATE') {
+                            this.updateDebateMessagesOnly();
+                        } else if (this.currentState === 'VOTING') {
+                            this.updateVoteCountsOnly();
+                        }
+                    } else {
+                        // Pas de focus : update normal
+                        this.updateUI();
+                    }
+
                     await this.checkStateProgression();
                 }
 
             } catch (error) {
                 console.error('[DEBATE] Erreur heartbeat:', error);
             }
-        }, 5000); // 5 SECONDES au lieu de 1
+        }, 2000); // 2 secondes - Bon compromis
     }
 
     // Mise à jour du timer uniquement (sans requête DB)
@@ -238,7 +227,7 @@ class DebateModule {
         switch (this.currentState) {
             case 'STABILIZING': duration = this.config.stabilizationTime; break;
             case 'COUNTDOWN': duration = this.config.countdownTime; break;
-            case 'QUESTION': duration = this.config.questionTime; break;
+            case 'QUESTION': duration = this.config.questionTime; break; // FIXÉ
             case 'DEBATE': duration = this.config.debateTime; break;
             case 'VOTING': duration = this.config.votingTime; break;
             case 'RESULT': duration = this.config.resultTime; break;
@@ -259,6 +248,85 @@ class DebateModule {
             this.myRole = 'lawyer2';
         } else {
             this.myRole = 'spectator';
+        }
+    }
+
+    // ============================================
+    // UPDATES LÉGERS (sans détruire les inputs)
+    // ============================================
+    
+    updateDebateMessagesOnly() {
+        const lawyersChat = document.getElementById('lawyersChat');
+        const spectatorsChat = document.getElementById('spectatorsChat');
+        
+        if (lawyersChat) {
+            let messagesHTML = '';
+            for (const msg of this.sessionData.lawyerMessages) {
+                const isLawyer1 = msg.role === 'lawyer1';
+                const lawyerName = isLawyer1 ? 'Avocat 1' : 'Avocat 2';
+                const lawyerClass = isLawyer1 ? 'lawyer-1' : 'lawyer-2';
+                
+                messagesHTML += `
+                    <div class="lawyer-message ${lawyerClass}">
+                        <div class="lawyer-name">${lawyerName}</div>
+                        <div class="lawyer-text">${msg.content}</div>
+                    </div>
+                `;
+            }
+            lawyersChat.innerHTML = messagesHTML || '<p class="no-messages">Aucun message pour le moment...</p>';
+            lawyersChat.scrollTop = lawyersChat.scrollHeight;
+        }
+        
+        if (spectatorsChat) {
+            let spectatorHTML = '';
+            for (const msg of this.sessionData.spectatorMessages) {
+                const isMe = msg.userId === this.userId;
+                spectatorHTML += `
+                    <div class="spectator-message ${isMe ? 'my-message' : ''}">
+                        <span class="spectator-text">${msg.content}</span>
+                    </div>
+                `;
+            }
+            spectatorsChat.innerHTML = spectatorHTML || '<p class="no-messages">Aucun commentaire...</p>';
+            spectatorsChat.scrollTop = spectatorsChat.scrollHeight;
+        }
+    }
+    
+    updateVoteCountsOnly() {
+        const votes1 = Object.values(this.sessionData.votes).filter(v => v === 'lawyer1').length;
+        const votes2 = Object.values(this.sessionData.votes).filter(v => v === 'lawyer2').length;
+        const totalVotes = votes1 + votes2;
+        
+        const voteCards = document.querySelectorAll('.debate-vote-card');
+        if (voteCards.length === 2) {
+            // Carte Avocat 1
+            const count1 = voteCards[0].querySelector('.vote-count');
+            if (count1) {
+                count1.textContent = `${votes1} ${votes1 > 1 ? 'votes' : 'vote'}`;
+            }
+            if (totalVotes > 0) {
+                const percent1 = voteCards[0].querySelector('.vote-percentage');
+                if (percent1) {
+                    percent1.textContent = `${Math.round(votes1 / totalVotes * 100)}%`;
+                }
+            }
+            
+            // Carte Avocat 2
+            const count2 = voteCards[1].querySelector('.vote-count');
+            if (count2) {
+                count2.textContent = `${votes2} ${votes2 > 1 ? 'votes' : 'vote'}`;
+            }
+            if (totalVotes > 0) {
+                const percent2 = voteCards[1].querySelector('.vote-percentage');
+                if (percent2) {
+                    percent2.textContent = `${Math.round(votes2 / totalVotes * 100)}%`;
+                }
+            }
+        }
+        
+        const voteCount = document.querySelector('.debate-vote-count');
+        if (voteCount) {
+            voteCount.textContent = `Total : ${totalVotes} ${totalVotes > 1 ? 'votes' : 'vote'}`;
         }
     }
 
