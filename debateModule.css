@@ -1,1057 +1,1377 @@
-/* ============================================
-   DEBATE MODULE STYLES - VERSION AVEC RÔLES
-   ============================================ */
+// ============================================
+// DEBATE MODULE - SYSTÈME AVEC RÔLES
+// ============================================
+// Architecture : 1 Décisionnaire, 2 Avocats, Spectateurs
+// Phases : QUESTION (30s) → DEBATE (60s) → VOTE (15s) → RESULT (10s)
 
-/* Badge dans le header */
-.debate-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 16px;
-    background: rgba(255, 255, 255, 0.2);
-    border: 3px solid rgba(0, 0, 0, 0.3);
-    border-radius: 8px;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    margin-top: 12px;
-    font-family: var(--font-pixel);
-    font-size: 12px;
-    color: #FFF;
-    text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.5);
-    animation: fadeIn 0.6s ease-out;
-}
+class DebateModule {
+    constructor(supabaseClient, audioManager) {
+        this.client = supabaseClient;
+        this.audio = audioManager;
+        this.userId = this.client.getUserId();
 
-.debate-badge:hover {
-    transform: translateY(-2px);
-    background: rgba(255, 255, 255, 0.3);
-    box-shadow: 0 4px 0 rgba(0, 0, 0, 0.3);
-}
+        // État
+        this.currentState = 'WAITING';
+        this.currentSessionId = null;
+        this.myRole = null; // 'decisionnaire', 'lawyer1', 'lawyer2', 'spectator'
+        this.isActive = false;
 
-.debate-badge-content {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
+        // Configuration temporelle
+        this.config = {
+            minPlayers: 4,           // Min : 1 décisionnaire + 2 avocats + 1 spectateur
+            stabilizationTime: 3000,  // 3s pour stabiliser la liste des joueurs
+            countdownTime: 3000,      // 3s compte à rebours
+            questionTime: 30000,      // 30s pour le choix de la question
+            debateTime: 60000,        // 60s pour le débat
+            votingTime: 15000,        // 15s pour le vote
+            resultTime: 10000         // 10s pour le résultat
+        };
 
-.debate-status-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: #999;
-    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.3);
-}
+        // Données de session
+        this.sessionData = {
+            participants: [],
+            decisionnaire: null,
+            lawyer1: null,
+            lawyer2: null,
+            spectators: [],
+            question: '',
+            lawyerMessages: [],      // Messages des avocats uniquement
+            spectatorMessages: [],   // Messages des spectateurs
+            votes: {},               // { userId: 'lawyer1' | 'lawyer2' }
+            stateStartTime: Date.now()
+        };
 
-.debate-badge.waiting .debate-status-dot {
-    background: #FFE66D;
-    animation: pulse 2s ease-in-out infinite;
-}
+        this.lastMessageTime = 0;
+        this.messageCooldown = 2000; // 2s entre chaque message
 
-.debate-badge.stabilizing .debate-status-dot {
-    background: #4ECDC4;
-    animation: pulse 1s ease-in-out infinite;
-}
-
-.debate-badge.active .debate-status-dot {
-    background: #FF6B9D;
-    animation: pulse 0.8s ease-in-out infinite;
-}
-
-.debate-badge.voting .debate-status-dot {
-    background: #95E1D3;
-    animation: pulse 1.2s ease-in-out infinite;
-}
-
-@keyframes pulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.6; transform: scale(1.3); }
-}
-
-.debate-participant-count {
-    background: rgba(0, 0, 0, 0.3);
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-size: 11px;
-}
-
-/* Modal principale */
-.debate-module-modal {
-    display: none;
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: rgba(0, 0, 0, 0.85);
-    backdrop-filter: blur(10px);
-    z-index: 9999;
-    align-items: center;
-    justify-content: center;
-    padding: 20px;
-    animation: fadeIn 0.3s ease-out;
-}
-
-.debate-module-modal.active {
-    display: flex;
-}
-
-@keyframes fadeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
-}
-
-.debate-module-container {
-    width: 100%;
-    max-width: 1100px;
-    max-height: 90vh;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    border: 6px solid rgba(0, 0, 0, 0.5);
-    border-radius: 12px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-    display: flex;
-    flex-direction: column;
-    position: relative;
-    overflow: hidden;
-    animation: scaleIn 0.4s cubic-bezier(0.68, -0.55, 0.265, 1.55);
-}
-
-@keyframes scaleIn {
-    from {
-        transform: scale(0.8);
-        opacity: 0;
+        this.init();
     }
-    to {
-        transform: scale(1);
-        opacity: 1;
+
+    async init() {
+        console.log('🎭 [DEBATE] Initialisation module débat avec rôles...');
+
+        this.createUI();
+        this.createDebateBadge();
+        this.setupEventListeners();
+        this.startGlobalHeartbeat();
+
+        console.log('✅ [DEBATE] Module initialisé');
+    }
+
+    createDebateBadge() {
+        const header = document.querySelector('.header .container');
+        if (!header) return;
+
+        const badge = document.createElement('div');
+        badge.id = 'debateBadge';
+        badge.className = 'debate-badge';
+        badge.innerHTML = `
+            <div class="debate-badge-content">
+                <span class="debate-status-dot"></span>
+                <span class="debate-badge-text">Débat Live</span>
+                <span class="debate-participant-count">0</span>
+            </div>
+        `;
+
+        badge.addEventListener('click', () => this.openDebateModule());
+        header.appendChild(badge);
+    }
+
+    createUI() {
+        const modalHTML = `
+            <div class="modal debate-module-modal" id="debateModuleModal">
+                <div class="debate-module-container">
+                    <button class="debate-close-btn" id="closeDebateModule">✖</button>
+                    
+                    <!-- Header avec timer et info -->
+                    <div class="debate-header">
+                        <div class="debate-state-info">
+                            <span class="debate-state-icon">⏳</span>
+                            <span class="debate-state-text" id="debateStateText">En attente...</span>
+                        </div>
+                        <div class="debate-timer" id="debateTimer">--:--</div>
+                        <div class="debate-participants-info">
+                            <span class="participant-icon">👥</span>
+                            <span id="debateParticipantCount">0</span>/4+
+                        </div>
+                    </div>
+                    
+                    <!-- Zone principale d'affichage -->
+                    <div class="debate-main-area" id="debateMainArea">
+                        <div class="debate-waiting-screen">
+                            <div class="debate-waiting-icon">⏳</div>
+                            <h2>Chargement...</h2>
+                        </div>
+                    </div>
+                    
+                    <!-- Zone d'interaction (inputs, boutons) -->
+                    <div class="debate-interaction-area" id="debateInteractionArea"></div>
+                    
+                    <!-- Footer avec badge de rôle -->
+                    <div class="debate-footer">
+                        <div class="debate-role-badge" id="debateRoleBadge">
+                            <span class="role-icon">👤</span>
+                            <span id="debateRoleText">En attente d'attribution...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        document.body.insertAdjacentHTML('beforeend', modalHTML);
+    }
+
+    setupEventListeners() {
+        document.getElementById('closeDebateModule')?.addEventListener('click', () => {
+            this.closeDebateModule();
+        });
+    }
+
+    // ============================================
+    // HEARTBEAT GLOBAL
+    // ============================================
+
+    startGlobalHeartbeat() {
+        // Timer local (1s) - SANS requête DB
+        setInterval(() => {
+            const timer = document.getElementById('debateTimer');
+            if (!timer) return;
+
+            const elapsed = Date.now() - this.sessionData.stateStartTime;
+            let duration = 0;
+
+            switch (this.currentState) {
+                case 'STABILIZING': duration = this.config.stabilizationTime; break;
+                case 'COUNTDOWN': duration = this.config.countdownTime; break;
+                case 'TOPIC_SELECTION': duration = this.config.topicTime; break;
+                case 'DEBATE': duration = this.config.debateTime; break;
+                case 'VOTING': duration = this.config.votingTime; break;
+                case 'RESULT': duration = this.config.resultTime; break;
+            }
+
+            const remaining = Math.max(0, duration - elapsed);
+            const secs = Math.floor(remaining / 1000);
+            const mins = Math.floor(secs / 60);
+            timer.textContent = `${mins}:${(secs % 60).toString().padStart(2, '0')}`;
+        }, 1000);
+
+        // Heartbeat LENT (5s) - AVEC requête DB
+        setInterval(async () => {
+            try {
+                // Ne PAS update si input focus
+                const activeElement = document.activeElement;
+                const isInputFocused = activeElement && (
+                    activeElement.tagName === 'INPUT' ||
+                    activeElement.tagName === 'TEXTAREA'
+                );
+
+                if (isInputFocused) {
+                    console.log('[DEBATE] Skip update - input focus');
+                    return; // Skip complètement
+                }
+
+                // Toujours vérifier s'il y a une session active
+                const { data: sessions } = await this.client.client
+                    .from('debate_sessions')
+                    .select('*')
+                    .eq('is_active', true)
+                    .limit(1);
+
+                if (!sessions || sessions.length === 0) {
+                    this.currentSessionId = null;
+                    this.currentState = 'WAITING';
+                    this.sessionData.participants = [];
+                } else {
+                    const session = sessions[0];
+                    this.currentSessionId = session.id;
+                    this.currentState = session.state;
+
+                    const data = JSON.parse(session.data || '{}');
+                    this.sessionData = {
+                        participants: data.participants || [],
+                        decisionnaire: data.decisionnaire || null,
+                        lawyer1: data.lawyer1 || null,
+                        lawyer2: data.lawyer2 || null,
+                        spectators: data.spectators || [],
+                        question: data.question || '',
+                        lawyerMessages: data.lawyerMessages || [],
+                        spectatorMessages: data.spectatorMessages || [],
+                        votes: data.votes || {},
+                        stateStartTime: data.stateStartTime || Date.now()
+                    };
+
+                    // Déterminer mon rôle
+                    if (this.sessionData.decisionnaire === this.userId) {
+                        this.myRole = 'decisionnaire';
+                    } else if (this.sessionData.lawyer1 === this.userId) {
+                        this.myRole = 'lawyer1';
+                    } else if (this.sessionData.lawyer2 === this.userId) {
+                        this.myRole = 'lawyer2';
+                    } else {
+                        this.myRole = 'spectator';
+                    }
+                }
+
+                // Mettre à jour le badge
+                this.updateBadge();
+
+                // Si la modale est ouverte, mettre à jour l'UI
+                if (this.isActive) {
+                    this.updateUI();
+                    await this.checkStateProgression();
+                }
+
+            } catch (error) {
+                console.error('[DEBATE] Erreur heartbeat:', error);
+            }
+        }, 5000); // 5 SECONDES au lieu de 1
+    }
+
+    // Mise à jour du timer uniquement (sans requête DB)
+    updateTimerOnly() {
+        const timer = document.getElementById('debateTimer');
+        if (!timer) return;
+
+        const elapsed = Date.now() - this.sessionData.stateStartTime;
+        let duration = 0;
+
+        switch (this.currentState) {
+            case 'STABILIZING': duration = this.config.stabilizationTime; break;
+            case 'COUNTDOWN': duration = this.config.countdownTime; break;
+            case 'QUESTION': duration = this.config.questionTime; break;
+            case 'DEBATE': duration = this.config.debateTime; break;
+            case 'VOTING': duration = this.config.votingTime; break;
+            case 'RESULT': duration = this.config.resultTime; break;
+        }
+
+        const remaining = Math.max(0, duration - elapsed);
+        const secs = Math.floor(remaining / 1000);
+        const mins = Math.floor(secs / 60);
+        timer.textContent = `${mins}:${(secs % 60).toString().padStart(2, '0')}`;
+    }
+
+    updateMyRole() {
+        if (this.sessionData.decisionnaire === this.userId) {
+            this.myRole = 'decisionnaire';
+        } else if (this.sessionData.lawyer1 === this.userId) {
+            this.myRole = 'lawyer1';
+        } else if (this.sessionData.lawyer2 === this.userId) {
+            this.myRole = 'lawyer2';
+        } else {
+            this.myRole = 'spectator';
+        }
+    }
+
+    // ============================================
+    // PROGRESSION D'ÉTAT
+    // ============================================
+
+    async checkStateProgression() {
+        const count = this.sessionData.participants?.length || 0;
+        const elapsed = Date.now() - this.sessionData.stateStartTime;
+
+        // Système de "leader" : seul le premier participant fait la transition
+        // Cela réduit drastiquement les requêtes simultanées
+        const isLeader = this.sessionData.participants[0] === this.userId;
+
+        if (!isLeader) {
+            // Les non-leaders observent seulement
+            return;
+        }
+
+        // Ajouter un petit délai aléatoire pour éviter les conflits
+        const randomDelay = Math.random() * 200;
+
+        switch (this.currentState) {
+            case 'WAITING':
+                if (count >= this.config.minPlayers) {
+                    setTimeout(() => this.transitionToState('STABILIZING'), randomDelay);
+                }
+                break;
+
+            case 'STABILIZING':
+                if (elapsed >= this.config.stabilizationTime) {
+                    setTimeout(() => this.transitionToState('COUNTDOWN'), randomDelay);
+                }
+                break;
+
+            case 'COUNTDOWN':
+                if (elapsed >= this.config.countdownTime) {
+                    // Attribuer les rôles et passer à QUESTION
+                    setTimeout(async () => {
+                        await this.assignRoles();
+                        await this.transitionToState('QUESTION');
+                    }, randomDelay);
+                }
+                break;
+
+            case 'QUESTION':
+                if (elapsed >= this.config.questionTime) {
+                    // Si pas de question, utiliser une par défaut
+                    setTimeout(async () => {
+                        if (!this.sessionData.question) {
+                            await this.setDefaultQuestion();
+                        }
+                        await this.transitionToState('DEBATE');
+                    }, randomDelay);
+                }
+                break;
+
+            case 'DEBATE':
+                if (elapsed >= this.config.debateTime) {
+                    setTimeout(() => this.transitionToState('VOTING'), randomDelay);
+                }
+                break;
+
+            case 'VOTING':
+                if (elapsed >= this.config.votingTime) {
+                    setTimeout(() => this.transitionToState('RESULT'), randomDelay);
+                }
+                break;
+
+            case 'RESULT':
+                if (elapsed >= this.config.resultTime) {
+                    setTimeout(() => this.endSession(), randomDelay);
+                }
+                break;
+        }
+    }
+
+    async transitionToState(newState) {
+        console.log(`[DEBATE] Transition: ${this.currentState} → ${newState}`);
+
+        this.sessionData.stateStartTime = Date.now();
+
+        try {
+            await this.client.client
+                .from('debate_sessions')
+                .update({
+                    state: newState,
+                    data: JSON.stringify(this.sessionData)
+                })
+                .eq('id', this.currentSessionId);
+
+            console.log(`[DEBATE] ✅ État changé: ${newState}`);
+        } catch (error) {
+            console.error('[DEBATE] Erreur transition:', error);
+        }
+    }
+
+    async assignRoles() {
+        // Mélanger les participants
+        const shuffled = [...this.sessionData.participants].sort(() => Math.random() - 0.5);
+
+        this.sessionData.decisionnaire = shuffled[0];
+        this.sessionData.lawyer1 = shuffled[1];
+        this.sessionData.lawyer2 = shuffled[2];
+        this.sessionData.spectators = shuffled.slice(3);
+
+        console.log('[DEBATE] Rôles attribués:', {
+            decisionnaire: this.sessionData.decisionnaire,
+            lawyer1: this.sessionData.lawyer1,
+            lawyer2: this.sessionData.lawyer2,
+            spectators: this.sessionData.spectators
+        });
+
+        // Sauvegarder
+        try {
+            await this.client.client
+                .from('debate_sessions')
+                .update({
+                    data: JSON.stringify(this.sessionData)
+                })
+                .eq('id', this.currentSessionId);
+        } catch (error) {
+            console.error('[DEBATE] Erreur attribution rôles:', error);
+        }
+    }
+
+    async setDefaultQuestion() {
+        const defaultQuestions = [
+            "Les chats sont-ils meilleurs que les chiens ?",
+            "L'ananas a-t-il sa place sur une pizza ?",
+            "Est-il préférable d'être riche ou célèbre ?",
+            "Pain au chocolat ou chocolatine ?",
+            "Les séries sont-elles meilleures que les films ?"
+        ];
+
+        this.sessionData.question = defaultQuestions[Math.floor(Math.random() * defaultQuestions.length)];
+
+        try {
+            await this.client.client
+                .from('debate_sessions')
+                .update({
+                    data: JSON.stringify(this.sessionData)
+                })
+                .eq('id', this.currentSessionId);
+        } catch (error) {
+            console.error('[DEBATE] Erreur question par défaut:', error);
+        }
+    }
+
+    async endSession() {
+        console.log('[DEBATE] Fin de la session');
+
+        try {
+            await this.client.client
+                .from('debate_sessions')
+                .update({
+                    is_active: false
+                })
+                .eq('id', this.currentSessionId);
+
+            this.currentSessionId = null;
+            this.currentState = 'WAITING';
+            this.myRole = null;
+
+        } catch (error) {
+            console.error('[DEBATE] Erreur fin session:', error);
+        }
+    }
+
+    // ============================================
+    // GESTION DES MESSAGES
+    // ============================================
+
+    async sendLawyerMessage(message) {
+        // Seuls les avocats peuvent envoyer ici
+        if (this.myRole !== 'lawyer1' && this.myRole !== 'lawyer2') {
+            this.showDebateToast('Seuls les avocats peuvent écrire ici !', 'error');
+            return;
+        }
+
+        // Cooldown
+        const now = Date.now();
+        if (now - this.lastMessageTime < this.messageCooldown) {
+            const remaining = Math.ceil((this.messageCooldown - (now - this.lastMessageTime)) / 1000);
+            this.showDebateToast(`Attends ${remaining}s avant d\'écrire à nouveau`, 'warning');
+            return;
+        }
+
+        // Validation
+        if (!message || message.trim().length === 0) return;
+        if (message.length > 200) {
+            this.showDebateToast('Message trop long (max 200 caractères)', 'error');
+            return;
+        }
+
+        this.lastMessageTime = now;
+
+        const newMessage = {
+            id: Date.now() + '_' + Math.random().toString(36).substr(2, 9),
+            userId: this.userId,
+            role: this.myRole,
+            content: this.escapeHTML(message),
+            timestamp: Date.now()
+        };
+
+        // Ajouter localement d'abord pour feedback immédiat
+        this.sessionData.lawyerMessages.push(newMessage);
+        this.updateDebateMessages();
+
+        // Envoyer à la DB de manière asynchrone
+        try {
+            await this.client.client
+                .from('debate_sessions')
+                .update({
+                    data: JSON.stringify(this.sessionData)
+                })
+                .eq('id', this.currentSessionId);
+
+            if (this.audio) {
+                this.audio.playSound('addOpinion');
+            }
+        } catch (error) {
+            console.error('[DEBATE] Erreur envoi message avocat:', error);
+            // Retirer le message local en cas d'erreur
+            this.sessionData.lawyerMessages.pop();
+            this.updateDebateMessages();
+            this.showDebateToast('Erreur d\'envoi du message', 'error');
+        }
+    }
+
+    async sendSpectatorMessage(message) {
+        // Seuls les spectateurs peuvent envoyer ici
+        if (this.myRole !== 'spectator') {
+            this.showDebateToast('Seuls les spectateurs peuvent écrire ici !', 'error');
+            return;
+        }
+
+        // Cooldown
+        const now = Date.now();
+        if (now - this.lastMessageTime < this.messageCooldown) {
+            const remaining = Math.ceil((this.messageCooldown - (now - this.lastMessageTime)) / 1000);
+            this.showDebateToast(`Attends ${remaining}s avant d\'écrire à nouveau`, 'warning');
+            return;
+        }
+
+        // Validation
+        if (!message || message.trim().length === 0) return;
+        if (message.length > 150) {
+            this.showDebateToast('Message trop long (max 150 caractères)', 'error');
+            return;
+        }
+
+        this.lastMessageTime = now;
+
+        const newMessage = {
+            id: Date.now() + '_' + Math.random().toString(36).substr(2, 9),
+            userId: this.userId,
+            content: this.escapeHTML(message),
+            timestamp: Date.now()
+        };
+
+        // Ajouter localement d'abord pour feedback immédiat
+        this.sessionData.spectatorMessages.push(newMessage);
+        this.updateDebateMessages();
+
+        // Envoyer à la DB de manière asynchrone
+        try {
+            await this.client.client
+                .from('debate_sessions')
+                .update({
+                    data: JSON.stringify(this.sessionData)
+                })
+                .eq('id', this.currentSessionId);
+
+            if (this.audio) {
+                this.audio.playSound('setPostIt');
+            }
+        } catch (error) {
+            console.error('[DEBATE] Erreur envoi message spectateur:', error);
+            // Retirer le message local en cas d'erreur
+            this.sessionData.spectatorMessages.pop();
+            this.updateDebateMessages();
+            this.showDebateToast('Erreur d\'envoi du message', 'error');
+        }
+    }
+
+    async submitQuestion(question) {
+        // Seul le décisionnaire peut soumettre la question
+        if (this.myRole !== 'decisionnaire') {
+            this.showDebateToast('Seul le décisionnaire peut choisir la question !', 'error');
+            return;
+        }
+
+        // Validation
+        if (!question || question.trim().length === 0) {
+            this.showDebateToast('La question ne peut pas être vide', 'error');
+            return;
+        }
+
+        if (question.length > 120) {
+            this.showDebateToast('Question trop longue (max 120 caractères)', 'error');
+            return;
+        }
+
+        this.sessionData.question = this.escapeHTML(question);
+
+        try {
+            await this.client.client
+                .from('debate_sessions')
+                .update({
+                    data: JSON.stringify(this.sessionData)
+                })
+                .eq('id', this.currentSessionId);
+
+            this.showDebateToast('Question enregistrée !', 'success');
+
+            if (this.audio) {
+                this.audio.playSound('setPostIt');
+            }
+        } catch (error) {
+            console.error('[DEBATE] Erreur soumission question:', error);
+        }
+    }
+
+    async submitVote(lawyerId) {
+        // Seuls les spectateurs peuvent voter
+        if (this.myRole !== 'spectator') {
+            this.showDebateToast('Seuls les spectateurs peuvent voter !', 'error');
+            return;
+        }
+
+        // Vérifier qu'on n'a pas déjà voté
+        if (this.sessionData.votes[this.userId]) {
+            this.showDebateToast('Tu as déjà voté !', 'warning');
+            return;
+        }
+
+        this.sessionData.votes[this.userId] = lawyerId;
+
+        try {
+            await this.client.client
+                .from('debate_sessions')
+                .update({
+                    data: JSON.stringify(this.sessionData)
+                })
+                .eq('id', this.currentSessionId);
+
+            this.showDebateToast('Vote enregistré !', 'success');
+
+            if (this.audio) {
+                this.audio.playSound('afterVoting');
+            }
+        } catch (error) {
+            console.error('[DEBATE] Erreur vote:', error);
+        }
+    }
+
+    // ============================================
+    // OUVERTURE/FERMETURE
+    // ============================================
+
+    async openDebateModule() {
+        console.log('[DEBATE] Ouverture du module');
+
+        // Si pas de session active, en créer une
+        if (!this.currentSessionId) {
+            try {
+                const { data, error } = await this.client.client
+                    .from('debate_sessions')
+                    .insert({
+                        state: 'WAITING',
+                        is_active: true,
+                        data: JSON.stringify({
+                            participants: [this.userId],
+                            decisionnaire: null,
+                            lawyer1: null,
+                            lawyer2: null,
+                            spectators: [],
+                            question: '',
+                            lawyerMessages: [],
+                            spectatorMessages: [],
+                            votes: {},
+                            stateStartTime: Date.now()
+                        })
+                    })
+                    .select()
+                    .single();
+
+                if (error) throw error;
+
+                this.currentSessionId = data.id;
+                this.sessionData.participants = [this.userId];
+                console.log('[DEBATE] ✅ Session créée');
+            } catch (error) {
+                console.error('[DEBATE] Erreur création:', error);
+            }
+        } else {
+            // Rejoindre session existante
+            if (!this.sessionData.participants.includes(this.userId)) {
+                this.sessionData.participants.push(this.userId);
+
+                try {
+                    await this.client.client
+                        .from('debate_sessions')
+                        .update({
+                            data: JSON.stringify(this.sessionData)
+                        })
+                        .eq('id', this.currentSessionId);
+
+                    console.log('[DEBATE] ✅ Session rejointe');
+                } catch (error) {
+                    console.error('[DEBATE] Erreur rejoindre:', error);
+                }
+            }
+        }
+
+        this.isActive = true;
+
+        const modal = document.getElementById('debateModuleModal');
+        if (modal) {
+            modal.classList.add('active');
+        }
+
+        this.updateUI();
+
+        if (this.audio) {
+            this.audio.playSound('setPostIt');
+        }
+    }
+
+    closeDebateModule() {
+        this.isActive = false;
+
+        const modal = document.getElementById('debateModuleModal');
+        if (modal) {
+            modal.classList.remove('active');
+        }
+    }
+
+    // ============================================
+    // UI UPDATE
+    // ============================================
+
+    updateBadge() {
+        const badge = document.getElementById('debateBadge');
+        if (!badge) return;
+
+        const dot = badge.querySelector('.debate-status-dot');
+        const text = badge.querySelector('.debate-badge-text');
+        const count = badge.querySelector('.debate-participant-count');
+
+        const participantCount = this.sessionData.participants?.length || 0;
+        count.textContent = participantCount;
+
+        badge.classList.remove('waiting', 'stabilizing', 'active', 'voting');
+
+        switch (this.currentState) {
+            case 'WAITING':
+                badge.classList.add('waiting');
+                text.textContent = 'Lobby';
+                break;
+            case 'STABILIZING':
+            case 'COUNTDOWN':
+                badge.classList.add('stabilizing');
+                text.textContent = 'Démarrage...';
+                break;
+            case 'QUESTION':
+            case 'DEBATE':
+                badge.classList.add('active');
+                text.textContent = '🔴 LIVE';
+                break;
+            case 'VOTING':
+                badge.classList.add('voting');
+                text.textContent = 'Vote';
+                break;
+            case 'RESULT':
+                badge.classList.add('active');
+                text.textContent = 'Résultat';
+                break;
+        }
+    }
+
+    updateUI() {
+        const mainArea = document.getElementById('debateMainArea');
+        const interactionArea = document.getElementById('debateInteractionArea');
+        const participantCountEl = document.getElementById('debateParticipantCount');
+        const stateText = document.getElementById('debateStateText');
+        const timer = document.getElementById('debateTimer');
+        const roleText = document.getElementById('debateRoleText');
+        const roleBadge = document.getElementById('debateRoleBadge');
+
+        if (!mainArea) return;
+
+        // Sauvegarder l'état précédent pour éviter les re-renders inutiles
+        const previousState = this.previousRenderState || {};
+        const currentStateKey = `${this.currentState}_${this.myRole}_${this.sessionData.question}_${this.sessionData.votes[this.userId] || 'novote'}`;
+
+        this.previousRenderState = this.previousRenderState || {};
+
+        // Mettre à jour compteur
+        if (participantCountEl) {
+            participantCountEl.textContent = this.sessionData.participants?.length || 0;
+        }
+
+        // Mettre à jour timer
+        if (timer) {
+            const elapsed = Date.now() - this.sessionData.stateStartTime;
+            let duration = 0;
+
+            switch (this.currentState) {
+                case 'STABILIZING': duration = this.config.stabilizationTime; break;
+                case 'COUNTDOWN': duration = this.config.countdownTime; break;
+                case 'QUESTION': duration = this.config.questionTime; break;
+                case 'DEBATE': duration = this.config.debateTime; break;
+                case 'VOTING': duration = this.config.votingTime; break;
+                case 'RESULT': duration = this.config.resultTime; break;
+            }
+
+            const remaining = Math.max(0, duration - elapsed);
+            const secs = Math.floor(remaining / 1000);
+            const mins = Math.floor(secs / 60);
+            timer.textContent = `${mins}:${(secs % 60).toString().padStart(2, '0')}`;
+        }
+
+        // Mettre à jour rôle
+        if (roleText && roleBadge) {
+            const roleIcons = {
+                'decisionnaire': '⚖️',
+                'lawyer1': '👔',
+                'lawyer2': '👔',
+                'spectator': '👁️'
+            };
+
+            const roleNames = {
+                'decisionnaire': 'Décisionnaire',
+                'lawyer1': 'Avocat 1',
+                'lawyer2': 'Avocat 2',
+                'spectator': 'Spectateur'
+            };
+
+            roleBadge.querySelector('.role-icon').textContent = roleIcons[this.myRole] || '👤';
+            roleText.textContent = roleNames[this.myRole] || 'En attente...';
+
+            // Colorer le badge selon le rôle
+            roleBadge.classList.remove('role-decisionnaire', 'role-lawyer', 'role-spectator');
+            if (this.myRole === 'decisionnaire') {
+                roleBadge.classList.add('role-decisionnaire');
+            } else if (this.myRole === 'lawyer1' || this.myRole === 'lawyer2') {
+                roleBadge.classList.add('role-lawyer');
+            } else if (this.myRole === 'spectator') {
+                roleBadge.classList.add('role-spectator');
+            }
+        }
+
+        // Mettre à jour texte d'état
+        if (stateText) {
+            const stateNames = {
+                'WAITING': 'En attente de joueurs...',
+                'STABILIZING': 'Stabilisation...',
+                'COUNTDOWN': 'Démarrage imminent !',
+                'QUESTION': '❓ Choix de la question',
+                'DEBATE': '💬 Débat en cours',
+                'VOTING': '🗳️ Phase de vote',
+                'RESULT': '🏆 Résultat'
+            };
+            stateText.textContent = stateNames[this.currentState] || this.currentState;
+        }
+
+        // Ne re-render que si l'état ou le contexte a changé
+        const shouldRerender = previousState.stateKey !== currentStateKey;
+        this.previousRenderState.stateKey = currentStateKey;
+
+        // Toujours mettre à jour les chats en mode DEBATE (pour les nouveaux messages)
+        const shouldUpdateDebateChat = this.currentState === 'DEBATE' &&
+            (previousState.lawyerMessagesCount !== this.sessionData.lawyerMessages.length ||
+                previousState.spectatorMessagesCount !== this.sessionData.spectatorMessages.length);
+
+        this.previousRenderState.lawyerMessagesCount = this.sessionData.lawyerMessages.length;
+        this.previousRenderState.spectatorMessagesCount = this.sessionData.spectatorMessages.length;
+
+        // Toujours mettre à jour les votes en mode VOTING (pour les nouveaux votes)
+        const shouldUpdateVotes = this.currentState === 'VOTING' &&
+            previousState.votesCount !== Object.keys(this.sessionData.votes).length;
+
+        this.previousRenderState.votesCount = Object.keys(this.sessionData.votes).length;
+
+        // Rendu selon l'état (seulement si nécessaire)
+        if (shouldRerender) {
+            switch (this.currentState) {
+                case 'WAITING':
+                    this.renderWaitingScreen(mainArea, interactionArea);
+                    break;
+                case 'STABILIZING':
+                    this.renderStabilizingScreen(mainArea, interactionArea);
+                    break;
+                case 'COUNTDOWN':
+                    this.renderCountdownScreen(mainArea, interactionArea);
+                    break;
+                case 'QUESTION':
+                    this.renderQuestionScreen(mainArea, interactionArea);
+                    break;
+                case 'DEBATE':
+                    this.renderDebateScreen(mainArea, interactionArea);
+                    break;
+                case 'VOTING':
+                    this.renderVotingScreen(mainArea, interactionArea);
+                    break;
+                case 'RESULT':
+                    this.renderResultScreen(mainArea, interactionArea);
+                    break;
+            }
+        } else if (shouldUpdateDebateChat) {
+            // Mise à jour légère : seulement les messages
+            this.updateDebateMessages();
+        } else if (shouldUpdateVotes) {
+            // Mise à jour légère : seulement les votes
+            this.updateVoteCounts();
+        }
+    }
+
+    // ============================================
+    // MISES À JOUR LÉGÈRES (sans re-render complet)
+    // ============================================
+
+    updateDebateMessages() {
+        const lawyersChat = document.getElementById('lawyersChat');
+        const spectatorsChat = document.getElementById('spectatorsChat');
+
+        if (lawyersChat) {
+            let messagesHTML = '';
+            for (const msg of this.sessionData.lawyerMessages) {
+                const isLawyer1 = msg.role === 'lawyer1';
+                const lawyerName = isLawyer1 ? 'Avocat 1' : 'Avocat 2';
+                const lawyerClass = isLawyer1 ? 'lawyer-1' : 'lawyer-2';
+
+                messagesHTML += `
+                    <div class="lawyer-message ${lawyerClass}">
+                        <div class="lawyer-name">${lawyerName}</div>
+                        <div class="lawyer-text">${msg.content}</div>
+                    </div>
+                `;
+            }
+            lawyersChat.innerHTML = messagesHTML || '<p class="no-messages">Aucun message pour le moment...</p>';
+            lawyersChat.scrollTop = lawyersChat.scrollHeight;
+        }
+
+        if (spectatorsChat) {
+            spectatorsChat.innerHTML = this.renderSpectatorMessages();
+            spectatorsChat.scrollTop = spectatorsChat.scrollHeight;
+        }
+    }
+
+    updateVoteCounts() {
+        const votes1 = Object.values(this.sessionData.votes).filter(v => v === 'lawyer1').length;
+        const votes2 = Object.values(this.sessionData.votes).filter(v => v === 'lawyer2').length;
+        const totalVotes = votes1 + votes2;
+
+        // Mettre à jour les cartes de vote
+        const voteCards = document.querySelectorAll('.debate-vote-card');
+        if (voteCards.length === 2) {
+            // Carte Avocat 1
+            voteCards[0].querySelector('.vote-count').textContent = `${votes1} ${votes1 > 1 ? 'votes' : 'vote'}`;
+            if (totalVotes > 0) {
+                const percent = voteCards[0].querySelector('.vote-percentage');
+                if (percent) {
+                    percent.textContent = `${Math.round(votes1 / totalVotes * 100)}%`;
+                }
+            }
+
+            // Carte Avocat 2
+            voteCards[1].querySelector('.vote-count').textContent = `${votes2} ${votes2 > 1 ? 'votes' : 'vote'}`;
+            if (totalVotes > 0) {
+                const percent = voteCards[1].querySelector('.vote-percentage');
+                if (percent) {
+                    percent.textContent = `${Math.round(votes2 / totalVotes * 100)}%`;
+                }
+            }
+        }
+
+        // Mettre à jour le total
+        const voteCount = document.querySelector('.debate-vote-count');
+        if (voteCount) {
+            voteCount.textContent = `Total : ${totalVotes} ${totalVotes > 1 ? 'votes' : 'vote'}`;
+        }
+    }
+
+    // ============================================
+    // RENDUS D'ÉCRANS
+    // ============================================
+
+    renderWaitingScreen(mainArea, interactionArea) {
+        const count = this.sessionData.participants?.length || 0;
+
+        mainArea.innerHTML = `
+            <div class="debate-waiting-screen">
+                <div class="debate-waiting-icon">⏳</div>
+                <h2>Salle d'attente</h2>
+                <p class="debate-player-count">
+                    <span class="big-number">${count}</span> / 4 joueurs minimum
+                </p>
+                <div class="debate-progress-bar">
+                    <div class="debate-progress-fill" style="width: ${Math.min(count / 4 * 100, 100)}%"></div>
+                </div>
+                <p class="debate-waiting-hint">
+                    ${count >= 4 ? '✅ Démarrage dans quelques secondes...' : '⏱️ En attente de joueurs...'}
+                </p>
+                <div class="debate-info-text" style="margin-top: 24px;">
+                    <p>🎭 <strong>Comment ça marche ?</strong></p>
+                    <p style="font-size: 14px; margin-top: 8px;">
+                        • 1 Décisionnaire choisit la question<br>
+                        • 2 Avocats débattent pendant 60s<br>
+                        • Les spectateurs votent pour le meilleur !
+                    </p>
+                </div>
+            </div>
+        `;
+
+        interactionArea.innerHTML = '';
+    }
+
+    renderStabilizingScreen(mainArea, interactionArea) {
+        const count = this.sessionData.participants?.length || 0;
+
+        mainArea.innerHTML = `
+            <div class="debate-stabilizing-screen">
+                <div class="debate-spinner">🔄</div>
+                <h2>Vérification des joueurs...</h2>
+                <p>${count} joueurs prêts</p>
+            </div>
+        `;
+
+        interactionArea.innerHTML = '';
+    }
+
+    renderCountdownScreen(mainArea, interactionArea) {
+        const remaining = Math.max(0, this.config.countdownTime - (Date.now() - this.sessionData.stateStartTime));
+        const countdownNum = Math.ceil(remaining / 1000);
+
+        mainArea.innerHTML = `
+            <div class="debate-countdown-screen">
+                <div class="debate-countdown-number">${countdownNum}</div>
+                <h2>Préparez-vous !</h2>
+                <p>Les rôles vont être attribués...</p>
+            </div>
+        `;
+
+        interactionArea.innerHTML = '';
+    }
+
+    renderQuestionScreen(mainArea, interactionArea) {
+        const hasQuestion = !!this.sessionData.question;
+
+        mainArea.innerHTML = `
+            <div class="debate-question-screen">
+                <div class="debate-phase-banner">
+                    <span class="phase-icon">❓</span>
+                    <span class="phase-text">Phase de Question</span>
+                </div>
+                
+                ${hasQuestion ? `
+                    <div class="debate-question-display">
+                        <h3>Question choisie :</h3>
+                        <p class="debate-question-text">${this.sessionData.question}</p>
+                        <p class="debate-hint">⏱️ Le débat commence bientôt...</p>
+                    </div>
+                ` : `
+                    <div class="debate-question-waiting">
+                        <div class="debate-hourglass">⏳</div>
+                        <h3>En attente de la question...</h3>
+                        <p>Le décisionnaire choisit le sujet du débat</p>
+                    </div>
+                `}
+            </div>
+        `;
+
+        // Zone d'interaction : seul le décisionnaire peut écrire
+        if (this.myRole === 'decisionnaire' && !hasQuestion) {
+            interactionArea.innerHTML = `
+                <div class="debate-question-input-zone">
+                    <h4>⚖️ Tu es le Décisionnaire !</h4>
+                    <p>Choisis une question pour le débat :</p>
+                    <div class="debate-input-container">
+                        <input 
+                            type="text" 
+                            id="questionInput" 
+                            class="debate-input" 
+                            placeholder="Ex: Les chats sont-ils meilleurs que les chiens ?"
+                            maxlength="120"
+                        >
+                        <button class="debate-submit-btn" id="submitQuestionBtn">
+                            Valider
+                        </button>
+                    </div>
+                    <p class="debate-hint" style="margin-top: 8px;">
+                        💡 Pose une question qui crée le débat !
+                    </p>
+                </div>
+            `;
+
+            document.getElementById('submitQuestionBtn')?.addEventListener('click', () => {
+                const input = document.getElementById('questionInput');
+                if (input) {
+                    this.submitQuestion(input.value);
+                }
+            });
+
+            document.getElementById('questionInput')?.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    const input = document.getElementById('questionInput');
+                    if (input) {
+                        this.submitQuestion(input.value);
+                    }
+                }
+            });
+        } else if (hasQuestion) {
+            interactionArea.innerHTML = `
+                <div class="debate-info-box success">
+                    ✅ Question validée ! Le débat va commencer...
+                </div>
+            `;
+        } else {
+            interactionArea.innerHTML = `
+                <div class="debate-info-box">
+                    ⏳ En attente du décisionnaire...
+                </div>
+            `;
+        }
+    }
+
+    renderDebateScreen(mainArea, interactionArea) {
+        // Afficher la question
+        let messagesHTML = '';
+
+        // Messages des avocats
+        for (const msg of this.sessionData.lawyerMessages) {
+            const isLawyer1 = msg.role === 'lawyer1';
+            const lawyerName = isLawyer1 ? 'Avocat 1' : 'Avocat 2';
+            const lawyerClass = isLawyer1 ? 'lawyer-1' : 'lawyer-2';
+
+            messagesHTML += `
+                <div class="lawyer-message ${lawyerClass}">
+                    <div class="lawyer-name">${lawyerName}</div>
+                    <div class="lawyer-text">${msg.content}</div>
+                </div>
+            `;
+        }
+
+        mainArea.innerHTML = `
+            <div class="debate-active-screen">
+                <div class="debate-topic-banner">
+                    <span class="topic-icon">💬</span>
+                    <span class="debate-topic-text">${this.sessionData.question || 'Question en attente...'}</span>
+                </div>
+                
+                <div class="debate-lawyers-zone">
+                    <h4 class="lawyers-title">🎙️ Zone des Avocats</h4>
+                    <div class="lawyers-chat" id="lawyersChat">
+                        ${messagesHTML || '<p class="no-messages">Aucun message pour le moment...</p>'}
+                    </div>
+                </div>
+                
+                <div class="debate-spectators-zone" id="spectatorsZone">
+                    <h4 class="spectators-title">👁️ Chat des Spectateurs</h4>
+                    <div class="spectators-chat" id="spectatorsChat">
+                        ${this.renderSpectatorMessages()}
+                    </div>
+                </div>
+            </div>
+        `;
+
+        // Auto-scroll des chats
+        setTimeout(() => {
+            const lawyersChat = document.getElementById('lawyersChat');
+            const spectatorsChat = document.getElementById('spectatorsChat');
+            if (lawyersChat) lawyersChat.scrollTop = lawyersChat.scrollHeight;
+            if (spectatorsChat) spectatorsChat.scrollTop = spectatorsChat.scrollHeight;
+        }, 100);
+
+        // Zone d'interaction selon le rôle
+        if (this.myRole === 'lawyer1' || this.myRole === 'lawyer2') {
+            interactionArea.innerHTML = `
+                <div class="debate-lawyer-input-zone">
+                    <p class="input-label">👔 Défends ta position :</p>
+                    <div class="debate-input-container">
+                        <input 
+                            type="text" 
+                            id="lawyerMessageInput" 
+                            class="debate-input" 
+                            placeholder="Tape ton argument..."
+                            maxlength="200"
+                        >
+                        <button class="debate-submit-btn" id="sendLawyerMessageBtn">
+                            Envoyer
+                        </button>
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('sendLawyerMessageBtn')?.addEventListener('click', () => {
+                const input = document.getElementById('lawyerMessageInput');
+                if (input && input.value.trim()) {
+                    this.sendLawyerMessage(input.value);
+                    input.value = '';
+                }
+            });
+
+            document.getElementById('lawyerMessageInput')?.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    const input = document.getElementById('lawyerMessageInput');
+                    if (input && input.value.trim()) {
+                        this.sendLawyerMessage(input.value);
+                        input.value = '';
+                    }
+                }
+            });
+        } else if (this.myRole === 'spectator') {
+            interactionArea.innerHTML = `
+                <div class="debate-spectator-input-zone">
+                    <p class="input-label">👁️ Commente le débat :</p>
+                    <div class="debate-input-container">
+                        <input 
+                            type="text" 
+                            id="spectatorMessageInput" 
+                            class="debate-input" 
+                            placeholder="Ton avis..."
+                            maxlength="150"
+                        >
+                        <button class="debate-submit-btn" id="sendSpectatorMessageBtn">
+                            Envoyer
+                        </button>
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('sendSpectatorMessageBtn')?.addEventListener('click', () => {
+                const input = document.getElementById('spectatorMessageInput');
+                if (input && input.value.trim()) {
+                    this.sendSpectatorMessage(input.value);
+                    input.value = '';
+                }
+            });
+
+            document.getElementById('spectatorMessageInput')?.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    const input = document.getElementById('spectatorMessageInput');
+                    if (input && input.value.trim()) {
+                        this.sendSpectatorMessage(input.value);
+                        input.value = '';
+                    }
+                }
+            });
+        } else {
+            interactionArea.innerHTML = `
+                <div class="debate-info-box">
+                    ⚖️ Tu es le décisionnaire - observe le débat !
+                </div>
+            `;
+        }
+    }
+
+    renderSpectatorMessages() {
+        if (this.sessionData.spectatorMessages.length === 0) {
+            return '<p class="no-messages">Aucun commentaire...</p>';
+        }
+
+        let html = '';
+        for (const msg of this.sessionData.spectatorMessages) {
+            const isMe = msg.userId === this.userId;
+            html += `
+                <div class="spectator-message ${isMe ? 'my-message' : ''}">
+                    <span class="spectator-text">${msg.content}</span>
+                </div>
+            `;
+        }
+        return html;
+    }
+
+    renderVotingScreen(mainArea, interactionArea) {
+        const votes1 = Object.values(this.sessionData.votes).filter(v => v === 'lawyer1').length;
+        const votes2 = Object.values(this.sessionData.votes).filter(v => v === 'lawyer2').length;
+        const totalVotes = votes1 + votes2;
+        const hasVoted = !!this.sessionData.votes[this.userId];
+
+        mainArea.innerHTML = `
+            <div class="debate-voting-screen">
+                <h2>🗳️ À toi de voter !</h2>
+                <p class="debate-question-reminder">Question : ${this.sessionData.question}</p>
+                
+                <div class="debate-vote-options">
+                    <div class="debate-vote-card ${this.sessionData.votes[this.userId] === 'lawyer1' ? 'voted' : ''}">
+                        <div class="vote-lawyer-name">👔 Avocat 1</div>
+                        <div class="vote-count">${votes1} ${votes1 > 1 ? 'votes' : 'vote'}</div>
+                        ${totalVotes > 0 ? `<div class="vote-percentage">${Math.round(votes1 / totalVotes * 100)}%</div>` : ''}
+                    </div>
+                    
+                    <div class="debate-vote-card ${this.sessionData.votes[this.userId] === 'lawyer2' ? 'voted' : ''}">
+                        <div class="vote-lawyer-name">👔 Avocat 2</div>
+                        <div class="vote-count">${votes2} ${votes2 > 1 ? 'votes' : 'vote'}</div>
+                        ${totalVotes > 0 ? `<div class="vote-percentage">${Math.round(votes2 / totalVotes * 100)}%</div>` : ''}
+                    </div>
+                </div>
+                
+                <p class="debate-vote-count">Total : ${totalVotes} ${totalVotes > 1 ? 'votes' : 'vote'}</p>
+            </div>
+        `;
+
+        // Zone d'interaction : seuls les spectateurs peuvent voter
+        if (this.myRole === 'spectator') {
+            if (hasVoted) {
+                interactionArea.innerHTML = `
+                    <div class="debate-info-box success">
+                        ✅ Vote enregistré !
+                    </div>
+                `;
+            } else {
+                interactionArea.innerHTML = `
+                    <div class="debate-vote-buttons">
+                        <button class="debate-vote-btn lawyer1" id="voteLawyer1Btn">
+                            <span class="vote-icon">👔</span>
+                            Voter Avocat 1
+                        </button>
+                        <button class="debate-vote-btn lawyer2" id="voteLawyer2Btn">
+                            <span class="vote-icon">👔</span>
+                            Voter Avocat 2
+                        </button>
+                    </div>
+                `;
+
+                document.getElementById('voteLawyer1Btn')?.addEventListener('click', () => {
+                    this.submitVote('lawyer1');
+                });
+
+                document.getElementById('voteLawyer2Btn')?.addEventListener('click', () => {
+                    this.submitVote('lawyer2');
+                });
+            }
+        } else {
+            interactionArea.innerHTML = `
+                <div class="debate-info-box">
+                    ⏳ En attente des votes des spectateurs...
+                </div>
+            `;
+        }
+    }
+
+    renderResultScreen(mainArea, interactionArea) {
+        const votes1 = Object.values(this.sessionData.votes).filter(v => v === 'lawyer1').length;
+        const votes2 = Object.values(this.sessionData.votes).filter(v => v === 'lawyer2').length;
+        const totalVotes = votes1 + votes2;
+
+        let winner = null;
+        let winnerName = '';
+
+        if (votes1 > votes2) {
+            winner = 'lawyer1';
+            winnerName = 'Avocat 1';
+        } else if (votes2 > votes1) {
+            winner = 'lawyer2';
+            winnerName = 'Avocat 2';
+        } else {
+            winnerName = 'Égalité !';
+        }
+
+        mainArea.innerHTML = `
+            <div class="debate-result-screen">
+                <div class="debate-result-icon">${winner ? '🏆' : '🤝'}</div>
+                <h2 class="debate-result-title">${winner ? winnerName + ' gagne !' : 'Match nul !'}</h2>
+                
+                <div class="debate-result-stats">
+                    <div class="result-stat ${winner === 'lawyer1' ? 'winner' : ''}">
+                        <div class="stat-name">👔 Avocat 1</div>
+                        <div class="stat-value">${votes1}</div>
+                        ${totalVotes > 0 ? `<div class="stat-percent">${Math.round(votes1 / totalVotes * 100)}%</div>` : ''}
+                    </div>
+                    
+                    <div class="result-separator">VS</div>
+                    
+                    <div class="result-stat ${winner === 'lawyer2' ? 'winner' : ''}">
+                        <div class="stat-name">👔 Avocat 2</div>
+                        <div class="stat-value">${votes2}</div>
+                        ${totalVotes > 0 ? `<div class="stat-percent">${Math.round(votes2 / totalVotes * 100)}%</div>` : ''}
+                    </div>
+                </div>
+                
+                <p class="debate-result-total">
+                    ${totalVotes} ${totalVotes > 1 ? 'spectateurs ont voté' : 'spectateur a voté'}
+                </p>
+                
+                <p class="debate-return-info">
+                    Retour au lobby dans quelques secondes...
+                </p>
+            </div>
+        `;
+
+        interactionArea.innerHTML = '';
+    }
+
+    // ============================================
+    // UTILITAIRES
+    // ============================================
+
+    escapeHTML(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    showDebateToast(message, type = 'info') {
+        if (window.app && window.app.showToast) {
+            window.app.showToast(message, type);
+        }
     }
 }
 
-.debate-close-btn {
-    position: absolute;
-    top: 16px;
-    right: 16px;
-    width: 40px;
-    height: 40px;
-    background: rgba(255, 255, 255, 0.2);
-    border: 3px solid rgba(0, 0, 0, 0.3);
-    border-radius: 50%;
-    font-size: 20px;
-    cursor: pointer;
-    z-index: 10;
-    transition: all 0.2s ease;
-    color: #FFF;
-    font-family: Arial, sans-serif;
-}
-
-.debate-close-btn:hover {
-    background: rgba(255, 107, 157, 0.8);
-    transform: rotate(90deg);
-}
-
-/* Header */
-.debate-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 20px 24px;
-    background: rgba(0, 0, 0, 0.3);
-    border-bottom: 4px solid rgba(0, 0, 0, 0.4);
-    flex-shrink: 0;
-}
-
-.debate-state-info {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    font-family: var(--font-pixel);
-    font-size: 14px;
-    color: #FFF;
-    text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.5);
-}
-
-.debate-state-icon {
-    font-size: 20px;
-    animation: bounce 2s ease-in-out infinite;
-}
-
-@keyframes bounce {
-    0%, 100% { transform: translateY(0); }
-    50% { transform: translateY(-5px); }
-}
-
-.debate-timer {
-    font-family: var(--font-mono);
-    font-size: 32px;
-    font-weight: bold;
-    color: #FFE66D;
-    text-shadow: 3px 3px 0 rgba(0, 0, 0, 0.5);
-    min-width: 100px;
-    text-align: center;
-}
-
-.debate-participants-info {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-family: var(--font-mono);
-    font-size: 18px;
-    color: #FFF;
-    text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.5);
-}
-
-/* Zone principale */
-.debate-main-area {
-    flex: 1;
-    padding: 24px;
-    overflow-y: auto;
-    background: rgba(255, 255, 255, 0.05);
-}
-
-.debate-main-area::-webkit-scrollbar {
-    width: 8px;
-}
-
-.debate-main-area::-webkit-scrollbar-track {
-    background: rgba(0, 0, 0, 0.2);
-}
-
-.debate-main-area::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.3);
-    border-radius: 4px;
-}
-
-/* Zone d'interaction */
-.debate-interaction-area {
-    padding: 20px 24px;
-    background: rgba(0, 0, 0, 0.2);
-    border-top: 4px solid rgba(0, 0, 0, 0.4);
-    flex-shrink: 0;
-    min-height: 60px;
-}
-
-/* Footer avec badge de rôle */
-.debate-footer {
-    padding: 12px 24px;
-    background: rgba(0, 0, 0, 0.25);
-    border-top: 3px solid rgba(0, 0, 0, 0.3);
-    display: flex;
-    justify-content: center;
-    align-items: center;
-}
-
-.debate-role-badge {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 16px;
-    background: rgba(255, 255, 255, 0.15);
-    border: 2px solid rgba(0, 0, 0, 0.3);
-    border-radius: 20px;
-    font-family: var(--font-pixel);
-    font-size: 12px;
-    color: #FFF;
-    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.5);
-    transition: all 0.3s ease;
-}
-
-.debate-role-badge.role-decisionnaire {
-    background: rgba(255, 215, 0, 0.3);
-    border-color: rgba(255, 215, 0, 0.6);
-    box-shadow: 0 0 15px rgba(255, 215, 0, 0.4);
-}
-
-.debate-role-badge.role-lawyer {
-    background: rgba(78, 205, 196, 0.3);
-    border-color: rgba(78, 205, 196, 0.6);
-    box-shadow: 0 0 15px rgba(78, 205, 196, 0.4);
-}
-
-.debate-role-badge.role-spectator {
-    background: rgba(149, 225, 211, 0.3);
-    border-color: rgba(149, 225, 211, 0.6);
-    box-shadow: 0 0 15px rgba(149, 225, 211, 0.4);
-}
-
-/* ============================================
-   ÉCRANS INDIVIDUELS
-   ============================================ */
-
-/* Écrans d'attente */
-.debate-waiting-screen,
-.debate-stabilizing-screen,
-.debate-countdown-screen {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    min-height: 300px;
-    text-align: center;
-}
-
-.debate-waiting-icon,
-.debate-spinner {
-    font-size: 80px;
-    margin-bottom: 24px;
-    animation: float 3s ease-in-out infinite;
-}
-
-.debate-spinner {
-    animation: spin 2s linear infinite;
-}
-
-@keyframes float {
-    0%, 100% { transform: translateY(0); }
-    50% { transform: translateY(-15px); }
-}
-
-@keyframes spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
-}
-
-.debate-waiting-screen h2,
-.debate-stabilizing-screen h2,
-.debate-countdown-screen h2 {
-    font-family: var(--font-pixel);
-    font-size: 24px;
-    color: #FFF;
-    text-shadow: 3px 3px 0 rgba(0, 0, 0, 0.5);
-    margin-bottom: 16px;
-}
-
-.debate-player-count {
-    margin: 24px 0;
-}
-
-.big-number {
-    font-size: 64px;
-    font-family: var(--font-mono);
-    color: #FFE66D;
-    text-shadow: 4px 4px 0 rgba(0, 0, 0, 0.5);
-}
-
-.debate-progress-bar {
-    width: 100%;
-    max-width: 400px;
-    height: 20px;
-    background: rgba(0, 0, 0, 0.3);
-    border: 3px solid rgba(0, 0, 0, 0.5);
-    border-radius: 10px;
-    overflow: hidden;
-    margin: 20px 0;
-}
-
-.debate-progress-fill {
-    height: 100%;
-    background: linear-gradient(90deg, #4ECDC4, #95E1D3);
-    transition: width 0.3s ease;
-}
-
-.debate-waiting-hint {
-    font-family: var(--font-mono);
-    font-size: 18px;
-    color: #FFF;
-    text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.5);
-    margin-top: 16px;
-}
-
-.debate-info-text {
-    font-family: var(--font-mono);
-    color: rgba(255, 255, 255, 0.9);
-    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.5);
-}
-
-/* Countdown */
-.debate-countdown-number {
-    font-size: 120px;
-    font-family: var(--font-mono);
-    color: #FF6B9D;
-    text-shadow: 5px 5px 0 rgba(0, 0, 0, 0.5);
-    animation: countdownPulse 1s ease-in-out infinite;
-}
-
-@keyframes countdownPulse {
-    0%, 100% { transform: scale(1); }
-    50% { transform: scale(1.1); }
-}
-
-/* ============================================
-   ÉCRAN QUESTION
-   ============================================ */
-
-.debate-question-screen {
-    text-align: center;
-}
-
-.debate-phase-banner {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 12px;
-    padding: 16px;
-    background: rgba(255, 215, 0, 0.2);
-    border: 3px solid rgba(255, 215, 0, 0.4);
-    border-radius: 8px;
-    margin-bottom: 24px;
-}
-
-.phase-icon {
-    font-size: 32px;
-}
-
-.phase-text {
-    font-family: var(--font-pixel);
-    font-size: 20px;
-    color: #FFF;
-    text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.5);
-}
-
-.debate-question-display {
-    padding: 24px;
-}
-
-.debate-question-display h3 {
-    font-family: var(--font-pixel);
-    font-size: 18px;
-    color: #FFE66D;
-    text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.5);
-    margin-bottom: 16px;
-}
-
-.debate-question-text {
-    font-family: var(--font-mono);
-    font-size: 24px;
-    color: #FFF;
-    text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.5);
-    padding: 20px;
-    background: rgba(255, 255, 255, 0.1);
-    border: 3px solid rgba(0, 0, 0, 0.3);
-    border-radius: 8px;
-    margin-bottom: 16px;
-}
-
-.debate-hint {
-    font-family: var(--font-mono);
-    font-size: 14px;
-    color: rgba(255, 255, 255, 0.8);
-    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.5);
-}
-
-.debate-question-waiting {
-    padding: 40px;
-}
-
-.debate-hourglass {
-    font-size: 60px;
-    margin-bottom: 20px;
-    animation: float 2s ease-in-out infinite;
-}
-
-.debate-question-input-zone {
-    text-align: center;
-}
-
-.debate-question-input-zone h4 {
-    font-family: var(--font-pixel);
-    font-size: 18px;
-    color: #FFE66D;
-    text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.5);
-    margin-bottom: 12px;
-}
-
-.debate-question-input-zone p {
-    font-family: var(--font-mono);
-    font-size: 14px;
-    color: rgba(255, 255, 255, 0.9);
-    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.5);
-    margin-bottom: 12px;
-}
-
-/* ============================================
-   ÉCRAN DÉBAT
-   ============================================ */
-
-.debate-active-screen {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    height: 100%;
-}
-
-.debate-topic-banner {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 12px;
-    padding: 16px;
-    background: rgba(255, 107, 157, 0.3);
-    border: 3px solid rgba(255, 107, 157, 0.5);
-    border-radius: 8px;
-}
-
-.topic-icon {
-    font-size: 24px;
-}
-
-.debate-topic-text {
-    font-family: var(--font-pixel);
-    font-size: 18px;
-    color: #FFF;
-    text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.5);
-}
-
-/* Zone des avocats */
-.debate-lawyers-zone {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    background: rgba(0, 0, 0, 0.2);
-    border: 3px solid rgba(0, 0, 0, 0.3);
-    border-radius: 8px;
-    overflow: hidden;
-}
-
-.lawyers-title {
-    padding: 12px 16px;
-    background: rgba(78, 205, 196, 0.3);
-    border-bottom: 3px solid rgba(0, 0, 0, 0.3);
-    font-family: var(--font-pixel);
-    font-size: 14px;
-    color: #FFF;
-    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.5);
-    margin: 0;
-}
-
-.lawyers-chat {
-    flex: 1;
-    padding: 16px;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-}
-
-.lawyers-chat::-webkit-scrollbar {
-    width: 6px;
-}
-
-.lawyers-chat::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.3);
-    border-radius: 3px;
-}
-
-.lawyer-message {
-    padding: 12px 16px;
-    border-radius: 8px;
-    font-family: var(--font-mono);
-    font-size: 14px;
-    animation: slideIn 0.3s ease-out;
-}
-
-@keyframes slideIn {
-    from {
-        opacity: 0;
-        transform: translateY(10px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
-
-.lawyer-message.lawyer-1 {
-    background: rgba(78, 205, 196, 0.4);
-    border: 2px solid rgba(78, 205, 196, 0.6);
-    align-self: flex-start;
-    max-width: 80%;
-}
-
-.lawyer-message.lawyer-2 {
-    background: rgba(149, 225, 211, 0.4);
-    border: 2px solid rgba(149, 225, 211, 0.6);
-    align-self: flex-end;
-    max-width: 80%;
-}
-
-.lawyer-name {
-    font-family: var(--font-pixel);
-    font-size: 10px;
-    color: rgba(255, 255, 255, 0.8);
-    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.5);
-    margin-bottom: 4px;
-}
-
-.lawyer-text {
-    color: #FFF;
-    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.3);
-    line-height: 1.4;
-}
-
-/* Zone des spectateurs */
-.debate-spectators-zone {
-    max-height: 150px;
-    display: flex;
-    flex-direction: column;
-    background: rgba(0, 0, 0, 0.2);
-    border: 3px solid rgba(0, 0, 0, 0.3);
-    border-radius: 8px;
-    overflow: hidden;
-}
-
-.spectators-title {
-    padding: 8px 16px;
-    background: rgba(149, 225, 211, 0.3);
-    border-bottom: 3px solid rgba(0, 0, 0, 0.3);
-    font-family: var(--font-pixel);
-    font-size: 12px;
-    color: #FFF;
-    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.5);
-    margin: 0;
-}
-
-.spectators-chat {
-    flex: 1;
-    padding: 12px;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-}
-
-.spectators-chat::-webkit-scrollbar {
-    width: 4px;
-}
-
-.spectators-chat::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.3);
-    border-radius: 2px;
-}
-
-.spectator-message {
-    padding: 6px 12px;
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 6px;
-    font-family: var(--font-mono);
-    font-size: 12px;
-    color: #FFF;
-    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.3);
-    animation: fadeIn 0.2s ease-out;
-}
-
-.spectator-message.my-message {
-    background: rgba(255, 230, 109, 0.2);
-    border: 1px solid rgba(255, 230, 109, 0.4);
-}
-
-.no-messages {
-    text-align: center;
-    color: rgba(255, 255, 255, 0.5);
-    font-size: 12px;
-    padding: 20px;
-}
-
-/* ============================================
-   ÉCRAN VOTE
-   ============================================ */
-
-.debate-voting-screen {
-    text-align: center;
-    padding: 24px 0;
-}
-
-.debate-voting-screen h2 {
-    font-family: var(--font-pixel);
-    font-size: 24px;
-    color: #FFF;
-    text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.5);
-    margin-bottom: 16px;
-}
-
-.debate-question-reminder {
-    font-family: var(--font-mono);
-    font-size: 16px;
-    color: rgba(255, 255, 255, 0.9);
-    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.5);
-    margin-bottom: 32px;
-    padding: 12px;
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 8px;
-}
-
-.debate-vote-options {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 20px;
-    max-width: 600px;
-    margin: 0 auto 24px;
-}
-
-.debate-vote-card {
-    background: rgba(255, 255, 255, 0.15);
-    border: 4px solid rgba(0, 0, 0, 0.3);
-    border-radius: 12px;
-    padding: 24px;
-    transition: all 0.3s ease;
-}
-
-.debate-vote-card.voted {
-    background: rgba(78, 205, 196, 0.4);
-    border-color: rgba(78, 205, 196, 0.8);
-    box-shadow: 0 0 20px rgba(78, 205, 196, 0.6);
-    transform: scale(1.05);
-}
-
-.vote-lawyer-name {
-    font-family: var(--font-pixel);
-    font-size: 18px;
-    color: #FFF;
-    text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.5);
-    margin-bottom: 12px;
-}
-
-.vote-count {
-    font-size: 40px;
-    font-family: var(--font-mono);
-    color: #FFE66D;
-    text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.5);
-    margin: 8px 0;
-}
-
-.vote-percentage {
-    font-size: 20px;
-    color: #95E1D3;
-    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.5);
-}
-
-.debate-vote-count {
-    font-family: var(--font-mono);
-    font-size: 16px;
-    color: rgba(255, 255, 255, 0.8);
-    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.5);
-}
-
-.debate-vote-buttons {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 20px;
-    max-width: 600px;
-    margin: 0 auto;
-}
-
-.debate-vote-btn {
-    padding: 20px;
-    background: rgba(78, 205, 196, 0.6);
-    border: 3px solid rgba(0, 0, 0, 0.3);
-    border-radius: 12px;
-    font-family: var(--font-pixel);
-    font-size: 14px;
-    color: #FFF;
-    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.5);
-    cursor: pointer;
-    transition: all 0.2s ease;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 8px;
-}
-
-.debate-vote-btn:hover {
-    background: rgba(78, 205, 196, 0.8);
-    transform: translateY(-4px);
-    box-shadow: 0 6px 0 rgba(0, 0, 0, 0.3);
-}
-
-.debate-vote-btn:active {
-    transform: translateY(-2px);
-    box-shadow: 0 3px 0 rgba(0, 0, 0, 0.3);
-}
-
-.debate-vote-btn.lawyer2 {
-    background: rgba(149, 225, 211, 0.6);
-}
-
-.debate-vote-btn.lawyer2:hover {
-    background: rgba(149, 225, 211, 0.8);
-}
-
-.vote-icon {
-    font-size: 24px;
-}
-
-/* ============================================
-   ÉCRAN RÉSULTAT
-   ============================================ */
-
-.debate-result-screen {
-    text-align: center;
-    padding: 24px 0;
-}
-
-.debate-result-icon {
-    font-size: 80px;
-    margin-bottom: 20px;
-    animation: resultBounce 0.6s cubic-bezier(0.68, -0.55, 0.265, 1.55);
-}
-
-@keyframes resultBounce {
-    from {
-        transform: scale(0);
-        opacity: 0;
-    }
-    to {
-        transform: scale(1);
-        opacity: 1;
-    }
-}
-
-.debate-result-title {
-    font-family: var(--font-pixel);
-    font-size: 32px;
-    color: #FFE66D;
-    text-shadow: 3px 3px 0 rgba(0, 0, 0, 0.5);
-    margin-bottom: 32px;
-}
-
-.debate-result-stats {
-    display: grid;
-    grid-template-columns: 1fr auto 1fr;
-    gap: 20px;
-    max-width: 600px;
-    margin: 0 auto 24px;
-    align-items: center;
-}
-
-.result-stat {
-    background: rgba(255, 255, 255, 0.1);
-    border: 4px solid rgba(0, 0, 0, 0.3);
-    border-radius: 12px;
-    padding: 24px;
-    transition: all 0.3s ease;
-}
-
-.result-stat.winner {
-    background: rgba(255, 215, 0, 0.3);
-    border-color: rgba(255, 215, 0, 0.8);
-    box-shadow: 0 0 30px rgba(255, 215, 0, 0.6);
-    transform: scale(1.1);
-}
-
-.stat-name {
-    font-family: var(--font-pixel);
-    font-size: 14px;
-    color: #FFF;
-    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.5);
-    margin-bottom: 12px;
-}
-
-.stat-value {
-    font-size: 48px;
-    font-family: var(--font-mono);
-    color: #FFE66D;
-    text-shadow: 3px 3px 0 rgba(0, 0, 0, 0.5);
-    margin: 8px 0;
-}
-
-.stat-percent {
-    font-size: 20px;
-    color: #95E1D3;
-    text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.5);
-}
-
-.result-separator {
-    font-family: var(--font-pixel);
-    font-size: 24px;
-    color: rgba(255, 255, 255, 0.6);
-    text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.5);
-}
-
-.debate-result-total {
-    font-family: var(--font-mono);
-    font-size: 16px;
-    color: rgba(255, 255, 255, 0.9);
-    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.5);
-    margin: 16px 0;
-}
-
-.debate-return-info {
-    font-family: var(--font-mono);
-    font-size: 14px;
-    color: rgba(255, 255, 255, 0.7);
-    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.5);
-    margin-top: 24px;
-}
-
-/* ============================================
-   COMPOSANTS D'INTERACTION
-   ============================================ */
-
-.debate-input-container {
-    display: flex;
-    gap: 12px;
-    align-items: stretch;
-}
-
-.debate-input {
-    flex: 1;
-    padding: 12px 16px;
-    background: rgba(255, 255, 255, 0.2);
-    border: 3px solid rgba(0, 0, 0, 0.3);
-    border-radius: 8px;
-    font-family: var(--font-mono);
-    font-size: 16px;
-    color: #FFF;
-    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.3);
-}
-
-.debate-input::placeholder {
-    color: rgba(255, 255, 255, 0.5);
-}
-
-.debate-input:focus {
-    outline: none;
-    border-color: rgba(78, 205, 196, 0.8);
-    box-shadow: 0 0 0 3px rgba(78, 205, 196, 0.3);
-}
-
-.debate-submit-btn {
-    padding: 12px 24px;
-    background: rgba(78, 205, 196, 0.8);
-    border: 3px solid rgba(0, 0, 0, 0.3);
-    border-radius: 8px;
-    font-family: var(--font-pixel);
-    font-size: 12px;
-    color: #FFF;
-    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.5);
-    cursor: pointer;
-    transition: all 0.2s ease;
-    text-transform: uppercase;
-    white-space: nowrap;
-}
-
-.debate-submit-btn:hover {
-    background: rgba(78, 205, 196, 1);
-    transform: translateY(-2px);
-    box-shadow: 0 4px 0 rgba(0, 0, 0, 0.3);
-}
-
-.debate-submit-btn:active {
-    transform: translateY(0);
-    box-shadow: 0 2px 0 rgba(0, 0, 0, 0.3);
-}
-
-.debate-info-box {
-    padding: 16px;
-    background: rgba(255, 255, 255, 0.15);
-    border: 3px solid rgba(0, 0, 0, 0.3);
-    border-radius: 8px;
-    text-align: center;
-    font-family: var(--font-mono);
-    font-size: 16px;
-    color: #FFF;
-    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.5);
-}
-
-.debate-info-box.success {
-    background: rgba(78, 205, 196, 0.3);
-    border-color: rgba(78, 205, 196, 0.6);
-}
-
-.input-label {
-    font-family: var(--font-pixel);
-    font-size: 14px;
-    color: #FFF;
-    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.5);
-    margin-bottom: 8px;
-}
-
-/* ============================================
-   RESPONSIVE
-   ============================================ */
-
-@media (max-width: 768px) {
-    .debate-module-container {
-        max-width: 100%;
-        max-height: 100vh;
-        border-radius: 0;
-        border: none;
-    }
-    
-    .debate-header {
-        flex-direction: column;
-        gap: 12px;
-        padding: 16px;
-    }
-    
-    .debate-timer {
-        font-size: 24px;
-    }
-    
-    .debate-vote-options,
-    .debate-result-stats,
-    .debate-vote-buttons {
-        grid-template-columns: 1fr;
-        gap: 12px;
-    }
-    
-    .result-separator {
-        display: none;
-    }
-    
-    .debate-topic-text {
-        font-size: 14px;
-    }
-    
-    .debate-result-title {
-        font-size: 24px;
-    }
-    
-    .debate-badge {
-        font-size: 10px;
-        padding: 6px 12px;
-    }
-    
-    .debate-input-container {
-        flex-direction: column;
-    }
-    
-    .debate-spectators-zone {
-        max-height: 120px;
-    }
-}
-
-@media (max-width: 480px) {
-    .debate-main-area {
-        padding: 16px;
-    }
-    
-    .debate-interaction-area {
-        padding: 16px;
-    }
-    
-    .debate-topic-banner {
-        font-size: 14px;
-        padding: 12px;
-    }
-    
-    .lawyer-message {
-        font-size: 12px;
-        padding: 8px 12px;
-    }
-    
-    .debate-waiting-icon,
-    .debate-spinner {
-        font-size: 60px;
-    }
-    
-    .big-number {
-        font-size: 48px;
-    }
-    
-    .debate-countdown-number {
-        font-size: 80px;
-    }
-    
-    .vote-count,
-    .stat-value {
-        font-size: 36px;
-    }
-}
+window.DebateModule = DebateModule;
