@@ -18,7 +18,7 @@ class DebateModule {
 
         // Configuration temporelle
         this.config = {
-            minPlayers: 4,           // Min : 1 décisionnaire + 2 avocats + 1 spectateur
+            minPlayers: 1,           // ✅ MODIFIÉ : 1 pour tester seul (au lieu de 4)
             stabilizationTime: 3000,  // 3s pour stabiliser la liste des joueurs
             countdownTime: 3000,      // 3s compte à rebours
             questionTime: 30000,      // 30s pour le choix de la question
@@ -899,8 +899,51 @@ class DebateModule {
         // CLEANUP : Nettoyer les sessions zombies avant de commencer
         await this.cleanupOldSessions();
 
-        // Si pas de session active, en créer une
-        if (!this.currentSessionId) {
+        // ✅ FIX : CHERCHER d'abord une session active existante
+        const { data: existingSessions } = await this.client.client
+            .from('debate_sessions')
+            .select('*')
+            .eq('is_active', true)
+            .eq('state', 'WAITING')
+            .limit(1);
+
+        if (existingSessions && existingSessions.length > 0) {
+            // ✅ REJOINDRE la session existante
+            const session = existingSessions[0];
+            this.currentSessionId = session.id;
+            
+            const data = JSON.parse(session.data || '{}');
+            this.sessionData = {
+                participants: data.participants || [],
+                decisionnaire: data.decisionnaire || null,
+                lawyer1: data.lawyer1 || null,
+                lawyer2: data.lawyer2 || null,
+                spectators: data.spectators || [],
+                question: data.question || '',
+                lawyerMessages: data.lawyerMessages || [],
+                spectatorMessages: data.spectatorMessages || [],
+                votes: data.votes || {},
+                stateStartTime: data.stateStartTime || Date.now()
+            };
+            
+            // Ajouter ce joueur s'il n'est pas déjà dans la liste
+            if (!this.sessionData.participants.includes(this.userId)) {
+                this.sessionData.participants.push(this.userId);
+                
+                await this.client.client
+                    .from('debate_sessions')
+                    .update({
+                        data: JSON.stringify(this.sessionData)
+                    })
+                    .eq('id', this.currentSessionId);
+                
+                console.log('[DEBATE] ✅ Session rejointe, participants:', this.sessionData.participants.length);
+            } else {
+                console.log('[DEBATE] ✅ Déjà dans la session');
+            }
+            
+        } else {
+            // ✅ CRÉER une nouvelle session seulement si aucune n'existe
             try {
                 const { data, error } = await this.client.client
                     .from('debate_sessions')
@@ -927,22 +970,11 @@ class DebateModule {
 
                 this.currentSessionId = data.id;
                 this.sessionData.participants = [this.userId];
-                console.log('[DEBATE] ✅ Session créée');
+                console.log('[DEBATE] ✅ Nouvelle session créée');
             } catch (error) {
                 console.error('[DEBATE] Erreur création:', error);
             }
-        } else {
-            // Rejoindre session existante
-            if (!this.sessionData.participants.includes(this.userId)) {
-                this.sessionData.participants.push(this.userId);
-
-                try {
-                    await this.client.client
-                        .from('debate_sessions')
-                        .update({
-                            data: JSON.stringify(this.sessionData)
-                        })
-                        .eq('id', this.currentSessionId);
+        }
 
                     console.log('[DEBATE] ✅ Session rejointe');
                 } catch (error) {
