@@ -53,7 +53,9 @@ class DebateModule {
         this.createUI();
         this.createDebateBadge();
         this.setupEventListeners();
-        this.startGlobalHeartbeat();
+        // ✅ FIX CRITIQUE : Ne pas démarrer le heartbeat ici !
+        // Il sera démarré uniquement à l'ouverture du module
+        // this.startGlobalHeartbeat();
 
         console.log('✅ [DEBATE] Module initialisé');
     }
@@ -133,12 +135,12 @@ class DebateModule {
 
     startGlobalHeartbeat() {
         // Timer local (1s) - SANS requête DB
-        setInterval(() => {
+        this.timerInterval = setInterval(() => {
             this.updateTimerOnly();
         }, 1000);
 
         // Heartbeat optimisé (2s) - Compromis entre réactivité et requêtes
-        setInterval(async () => {
+        this.heartbeatInterval = setInterval(async () => {
             try {
                 // Toujours récupérer les données
                 const { data: sessions } = await this.client.client
@@ -908,6 +910,12 @@ class DebateModule {
             modal.classList.add('active');
         }
 
+        // ✅ FIX CRITIQUE : Démarrer le heartbeat UNIQUEMENT à l'ouverture
+        if (!this.heartbeatInterval) {
+            this.startGlobalHeartbeat();
+            console.log('[DEBATE] ✅ Heartbeat démarré');
+        }
+
         this.updateUI();
 
         if (this.audio) {
@@ -921,6 +929,18 @@ class DebateModule {
         const modal = document.getElementById('debateModuleModal');
         if (modal) {
             modal.classList.remove('active');
+        }
+        
+        // ✅ FIX CRITIQUE : Arrêter le heartbeat à la fermeture
+        if (this.heartbeatInterval) {
+            clearInterval(this.heartbeatInterval);
+            this.heartbeatInterval = null;
+            console.log('[DEBATE] ⏹️ Heartbeat arrêté');
+        }
+        
+        if (this.timerInterval) {
+            clearInterval(this.timerInterval);
+            this.timerInterval = null;
         }
         
         // Si on ferme pendant WAITING et qu'on est seul, nettoyer la session
