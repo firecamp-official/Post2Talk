@@ -53,9 +53,10 @@ class DebateModule {
         this.createUI();
         this.createDebateBadge();
         this.setupEventListeners();
-        // ✅ FIX CRITIQUE : Ne pas démarrer le heartbeat ici !
-        // Il sera démarré uniquement à l'ouverture du module
-        // this.startGlobalHeartbeat();
+        
+        // ✅ FIX INTELLIGENT : Heartbeat LÉGER pour le badge uniquement
+        // Seulement pour savoir combien de joueurs sont connectés
+        this.startBadgeHeartbeat();
 
         console.log('✅ [DEBATE] Module initialisé');
     }
@@ -130,7 +131,45 @@ class DebateModule {
     }
 
     // ============================================
-    // HEARTBEAT GLOBAL
+    // HEARTBEAT LÉGER POUR LE BADGE
+    // ============================================
+    // Heartbeat minimaliste qui tourne toujours en arrière-plan
+    // SEULEMENT pour mettre à jour le badge avec le nombre de participants
+    // Requête légère : juste compter les participants, pas tout charger
+    
+    startBadgeHeartbeat() {
+        this.badgeHeartbeatInterval = setInterval(async () => {
+            try {
+                // Requête ULTRA LÉGÈRE : juste l'état et le nombre de participants
+                const { data: sessions } = await this.client.client
+                    .from('debate_sessions')
+                    .select('state, data')
+                    .eq('is_active', true)
+                    .limit(1);
+
+                if (!sessions || sessions.length === 0) {
+                    this.currentState = 'WAITING';
+                    this.sessionData.participants = [];
+                } else {
+                    const session = sessions[0];
+                    this.currentState = session.state;
+                    const data = JSON.parse(session.data || '{}');
+                    this.sessionData.participants = data.participants || [];
+                }
+
+                // Mettre à jour SEULEMENT le badge
+                this.updateBadge();
+
+            } catch (error) {
+                console.error('[DEBATE] Erreur badge heartbeat:', error);
+            }
+        }, 5000); // 5 secondes - Suffisant pour le badge
+        
+        console.log('[DEBATE] 🏷️ Badge heartbeat démarré (5s)');
+    }
+
+    // ============================================
+    // HEARTBEAT COMPLET POUR LE MODULE OUVERT
     // ============================================
 
     startGlobalHeartbeat() {
@@ -216,6 +255,8 @@ class DebateModule {
                 console.error('[DEBATE] Erreur heartbeat:', error);
             }
         }, 2000); // 2 secondes - Bon compromis
+        
+        console.log('[DEBATE] 🔄 Heartbeat complet démarré (2s)');
     }
 
     // Mise à jour du timer uniquement (sans requête DB)
@@ -910,10 +951,9 @@ class DebateModule {
             modal.classList.add('active');
         }
 
-        // ✅ FIX CRITIQUE : Démarrer le heartbeat UNIQUEMENT à l'ouverture
+        // ✅ Démarrer le heartbeat COMPLET à l'ouverture
         if (!this.heartbeatInterval) {
             this.startGlobalHeartbeat();
-            console.log('[DEBATE] ✅ Heartbeat démarré');
         }
 
         this.updateUI();
@@ -931,11 +971,12 @@ class DebateModule {
             modal.classList.remove('active');
         }
         
-        // ✅ FIX CRITIQUE : Arrêter le heartbeat à la fermeture
+        // ✅ Arrêter SEULEMENT le heartbeat complet (2s)
+        // Le badge heartbeat (5s) continue en arrière-plan
         if (this.heartbeatInterval) {
             clearInterval(this.heartbeatInterval);
             this.heartbeatInterval = null;
-            console.log('[DEBATE] ⏹️ Heartbeat arrêté');
+            console.log('[DEBATE] ⏹️ Heartbeat complet arrêté');
         }
         
         if (this.timerInterval) {
