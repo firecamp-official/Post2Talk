@@ -409,22 +409,37 @@ class DebateModule {
         const count = this.sessionData.participants?.length || 0;
         const elapsed = Date.now() - this.sessionData.stateStartTime;
 
+        // 🔍 DEBUG
+        console.log('[DEBATE] checkStateProgression:', {
+            state: this.currentState,
+            participants: count,
+            minPlayers: this.config.minPlayers,
+            elapsed: Math.round(elapsed / 1000) + 's'
+        });
+
         // Système de "leader" : seul le premier participant fait la transition
         // Cela réduit drastiquement les requêtes simultanées
         const isLeader = this.sessionData.participants[0] === this.userId;
 
         if (!isLeader) {
             // Les non-leaders observent seulement
+            console.log('[DEBATE] Pas leader, j\'observe');
             return;
         }
+
+        console.log('[DEBATE] Je suis leader, je gère les transitions');
 
         // Ajouter un petit délai aléatoire pour éviter les conflits
         const randomDelay = Math.random() * 200;
 
         switch (this.currentState) {
             case 'WAITING':
+                console.log('[DEBATE] État WAITING, participants:', count, '/', this.config.minPlayers);
                 if (count >= this.config.minPlayers) {
+                    console.log('[DEBATE] ✅ Assez de joueurs ! Lancement...');
                     setTimeout(() => this.transitionToState('STABILIZING'), randomDelay);
+                } else {
+                    console.log('[DEBATE] ⏳ Pas assez de joueurs encore');
                 }
                 break;
 
