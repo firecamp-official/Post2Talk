@@ -1143,7 +1143,8 @@ class MurDeParole {
         document.getElementById('debateComment').value = '';
         
         await this.loadDebateComments(this.currentDebateId);
-        await this.loadDebates();
+        // ✅ OPTIMISATION : loadDebates() supprimé - économie de ~30 requêtes/jour
+        // Les commentaires sont déjà rechargés ci-dessus, pas besoin de tout recharger
         
         this.audio.playSound('addOpinion'); // Son d'ajout d'opinion
     }
