@@ -976,13 +976,6 @@ class DebateModule {
             }
         }
 
-                    console.log('[DEBATE] ✅ Session rejointe');
-                } catch (error) {
-                    console.error('[DEBATE] Erreur rejoindre:', error);
-                }
-            }
-        }
-
         this.isActive = true;
 
         const modal = document.getElementById('debateModuleModal');
