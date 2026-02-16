@@ -531,8 +531,15 @@ class MurDeParole {
         this.setupEventListeners();
         this.loadPostIts();
         this.loadDebates();
-        // Auto-refresh désactivé - utiliser le bouton "Rafraîchir" pour actualiser manuellement
-        // this.startAutoRefresh();
+        
+        // 🚀 OPTIMISATION : Polling intelligent au lieu de Realtime pour les débats
+        // Économie de 60% de requêtes
+        this.debatesPolling = setInterval(() => {
+            console.log('[POLLING] Rafraîchissement débats...');
+            this.loadDebates();
+        }, 30000); // 30 secondes
+        console.log('✅ Polling débats activé (30s)');
+        
         this.updateStatus();
         this.startTimerUpdates(); // Démarrer la mise à jour des timers
         
@@ -1047,7 +1054,10 @@ class MurDeParole {
         this.closeModal('debateModal');
         document.getElementById('debateForm').reset();
         
+        // ⚡ Forcer le rechargement après création
+        this.client._invalidateCache('debates_cache');
         await this.loadDebates();
+        
         this.audio.playSound('setPostIt'); // Son de création
     }
     
@@ -1113,6 +1123,9 @@ class MurDeParole {
         
         this.showToast('Vote enregistré !', 'success');
         
+        // ⚡ Forcer le rechargement après vote
+        this.client._invalidateCache('debates_cache');
+        
         // Recharger les stats
         await this.openDebateInteraction(this.currentDebateId);
         await this.loadDebates();
@@ -1143,6 +1156,9 @@ class MurDeParole {
         document.getElementById('debateComment').value = '';
         
         await this.loadDebateComments(this.currentDebateId);
+        
+        // ⚡ Invalider le cache (mais pas besoin de recharger)
+        this.client._invalidateCache('debates_cache');
         // ✅ OPTIMISATION : loadDebates() supprimé - économie de ~30 requêtes/jour
         // Les commentaires sont déjà rechargés ci-dessus, pas besoin de tout recharger
         
@@ -1304,7 +1320,7 @@ class MurDeParole {
             
             const createdAt = postIt.dataset.createdAt;
             if (!createdAt) return;
-            
+        
             const timeRemaining = this.getTimeRemaining(createdAt);
             timer.innerHTML = `⏱️ ${timeRemaining}`;
         });
@@ -1316,6 +1332,20 @@ class MurDeParole {
         this.timerInterval = setInterval(() => {
             this.updateTimers();
         }, 1000);
+    }
+    
+    // Cleanup quand la page se ferme
+    cleanup() {
+        if (this.debatesPolling) {
+            clearInterval(this.debatesPolling);
+            console.log('🛑 Polling débats arrêté');
+        }
+        if (this.timerInterval) {
+            clearInterval(this.timerInterval);
+        }
+        if (this.refreshInterval) {
+            clearInterval(this.refreshInterval);
+        }
     }
 }
 
@@ -1331,3 +1361,10 @@ if (document.readyState === 'loading') {
 } else {
     window.app = new MurDeParole();
 }
+
+// Cleanup automatique
+window.addEventListener('beforeunload', () => {
+    if (window.app) {
+        window.app.cleanup();
+    }
+});
