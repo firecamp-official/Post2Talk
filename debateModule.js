@@ -18,7 +18,7 @@ class DebateModule {
 
         // Configuration temporelle
         this.config = {
-            minPlayers: 1,           // ✅ MODIFIÉ : 1 pour tester seul (au lieu de 4)
+            minPlayers: 4,           // ✅ REMIS À 4 (1 décisionnaire + 2 avocats + 1 spectateur)
             stabilizationTime: 3000,  // 3s pour stabiliser la liste des joueurs
             countdownTime: 3000,      // 3s compte à rebours
             questionTime: 30000,      // 30s pour le choix de la question
