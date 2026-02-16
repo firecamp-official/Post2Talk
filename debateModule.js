@@ -18,8 +18,8 @@ class DebateModule {
 
         // Configuration temporelle
         this.config = {
-            minPlayers: 4,           // ✅ REMIS À 4 (1 décisionnaire + 2 avocats + 1 spectateur)
-            stabilizationTime: 3000,  // 3s pour stabiliser la liste des joueurs
+            minPlayers: 4,            // ✅ CORRIGÉ : 4 joueurs minimum (1 décisionnaire + 2 avocats + 1 spectateur min)
+            stabilizationTime: 5000,  // 5s pour stabiliser la liste des joueurs
             countdownTime: 3000,      // 3s compte à rebours
             questionTime: 30000,      // 30s pour le choix de la question
             debateTime: 60000,        // 60s pour le débat
@@ -47,11 +47,6 @@ class DebateModule {
         // 🔴 Realtime channel
         this.realtimeChannel = null;
         this.timerInterval = null;
-        this.progressionCheckInterval = null;
-        
-        // 💓 Heartbeat pour détecter les joueurs actifs/inactifs
-        this.playerHeartbeatInterval = null;
-        this.lastHeartbeat = Date.now();
 
         this.init();
     }
@@ -150,13 +145,6 @@ class DebateModule {
             this.updateTimerOnly();
         }, 1000);
         
-        // ✅ NOUVEAU : Timer pour vérifier la progression (indépendant de Realtime)
-        this.progressionCheckInterval = setInterval(() => {
-            if (this.isActive && this.currentSessionId) {
-                this.checkStateProgression();
-            }
-        }, 1000); // Vérifie toutes les secondes
-        
         // S'abonner aux changements en temps réel
         this.realtimeChannel = this.client.client
             .channel('debate_sessions_changes')
@@ -240,28 +228,36 @@ class DebateModule {
         this.currentSessionId = session.id;
         this.currentState = session.state;
         
-        // ✅ FIX : session.data peut être string OU objet selon la source
-        let data;
-        if (typeof session.data === 'string') {
-            data = JSON.parse(session.data || '{}');
-        } else {
-            data = session.data || {};
-        }
-        
+        // ✅ Les colonnes JSONB sont déjà des objets/arrays JavaScript
         this.sessionData = {
-            participants: data.participants || [],
-            decisionnaire: data.decisionnaire || null,
-            lawyer1: data.lawyer1 || null,
-            lawyer2: data.lawyer2 || null,
-            spectators: data.spectators || [],
-            question: data.question || '',
-            lawyerMessages: data.lawyerMessages || [],
-            spectatorMessages: data.spectatorMessages || [],
-            votes: data.votes || {},
-            stateStartTime: data.stateStartTime || Date.now()
+            participants: session.participants || [],
+            decisionnaire: session.decisionnaire || null,
+            lawyer1: session.lawyer1 || null,
+            lawyer2: session.lawyer2 || null,
+            spectators: [], // Calculé depuis participants
+            question: session.question || '',
+            lawyerMessages: session.lawyer_messages || [],
+            spectatorMessages: session.spectator_messages || [],
+            votes: session.votes || {},
+            stateStartTime: session.state_start_time || Date.now()
         };
         
         this.updateMyRole();
+    }
+    
+    // Helper pour sauvegarder la session dans la DB
+    getSessionUpdateObject() {
+        return {
+            participants: this.sessionData.participants || [],
+            decisionnaire: this.sessionData.decisionnaire,
+            lawyer1: this.sessionData.lawyer1,
+            lawyer2: this.sessionData.lawyer2,
+            question: this.sessionData.question || '',
+            lawyer_messages: this.sessionData.lawyerMessages || [],
+            spectator_messages: this.sessionData.spectatorMessages || [],
+            votes: this.sessionData.votes || {},
+            state_start_time: this.sessionData.stateStartTime || Date.now()
+        };
     }
 
     // Arrêter le Realtime (si besoin)
@@ -275,11 +271,6 @@ class DebateModule {
         if (this.timerInterval) {
             clearInterval(this.timerInterval);
             this.timerInterval = null;
-        }
-        
-        if (this.progressionCheckInterval) {
-            clearInterval(this.progressionCheckInterval);
-            this.progressionCheckInterval = null;
         }
     }
 
@@ -426,47 +417,57 @@ class DebateModule {
         const count = this.sessionData.participants?.length || 0;
         const elapsed = Date.now() - this.sessionData.stateStartTime;
 
-        // 🔍 DEBUG
-        console.log('[DEBATE] checkStateProgression:', {
-            state: this.currentState,
-            participants: count,
-            minPlayers: this.config.minPlayers,
-            elapsed: Math.round(elapsed / 1000) + 's'
-        });
-
         // Système de "leader" : seul le premier participant fait la transition
         // Cela réduit drastiquement les requêtes simultanées
         const isLeader = this.sessionData.participants[0] === this.userId;
 
         if (!isLeader) {
             // Les non-leaders observent seulement
-            console.log('[DEBATE] Pas leader, j\'observe');
             return;
         }
-
-        console.log('[DEBATE] Je suis leader, je gère les transitions');
 
         // Ajouter un petit délai aléatoire pour éviter les conflits
         const randomDelay = Math.random() * 200;
 
         switch (this.currentState) {
             case 'WAITING':
-                console.log('[DEBATE] État WAITING, participants:', count, '/', this.config.minPlayers);
+                // ✅ Attendre 4+ joueurs
                 if (count >= this.config.minPlayers) {
-                    console.log('[DEBATE] ✅ Assez de joueurs ! Lancement...');
                     setTimeout(() => this.transitionToState('STABILIZING'), randomDelay);
-                } else {
-                    console.log('[DEBATE] ⏳ Pas assez de joueurs encore');
                 }
                 break;
 
             case 'STABILIZING':
+                // ✅ Si quelqu'un quitte pendant la stabilisation → retour WAITING
+                if (count < this.config.minPlayers) {
+                    console.log('[DEBATE] ⚠️ Pas assez de joueurs, retour WAITING');
+                    setTimeout(() => this.transitionToState('WAITING'), randomDelay);
+                    return;
+                }
+                
+                // ✅ Si quelqu'un rejoint/quitte → reset la stabilisation
+                if (this.hasParticipantsChanged()) {
+                    console.log('[DEBATE] 🔄 Liste des joueurs modifiée, reset stabilisation');
+                    this.sessionData.stateStartTime = Date.now();
+                    this.lastParticipantsList = [...this.sessionData.participants];
+                    await this.saveSession();
+                    return;
+                }
+                
+                // ✅ Après 5s stable → lancer le countdown
                 if (elapsed >= this.config.stabilizationTime) {
                     setTimeout(() => this.transitionToState('COUNTDOWN'), randomDelay);
                 }
                 break;
 
             case 'COUNTDOWN':
+                // ✅ Si quelqu'un quitte pendant countdown → retour STABILIZING
+                if (count < this.config.minPlayers) {
+                    console.log('[DEBATE] ⚠️ Pas assez de joueurs, retour STABILIZING');
+                    setTimeout(() => this.transitionToState('STABILIZING'), randomDelay);
+                    return;
+                }
+                
                 if (elapsed >= this.config.countdownTime) {
                     // Attribuer les rôles et passer à QUESTION
                     setTimeout(async () => {
@@ -477,25 +478,21 @@ class DebateModule {
                 break;
 
             case 'QUESTION':
-                if (elapsed >= this.config.questionTime) {
-                    // Si pas de question, utiliser une par défaut
+            case 'DEBATE':
+            case 'VOTING':
+                // ✅ Pendant la partie : si qlq quitte, continuer quand même
+                // Les nouveaux arrivants seront spectateurs automatiquement
+                
+                if (this.currentState === 'QUESTION' && elapsed >= this.config.questionTime) {
                     setTimeout(async () => {
                         if (!this.sessionData.question) {
                             await this.setDefaultQuestion();
                         }
                         await this.transitionToState('DEBATE');
                     }, randomDelay);
-                }
-                break;
-
-            case 'DEBATE':
-                if (elapsed >= this.config.debateTime) {
+                } else if (this.currentState === 'DEBATE' && elapsed >= this.config.debateTime) {
                     setTimeout(() => this.transitionToState('VOTING'), randomDelay);
-                }
-                break;
-
-            case 'VOTING':
-                if (elapsed >= this.config.votingTime) {
+                } else if (this.currentState === 'VOTING' && elapsed >= this.config.votingTime) {
                     setTimeout(() => this.transitionToState('RESULT'), randomDelay);
                 }
                 break;
@@ -507,24 +504,69 @@ class DebateModule {
                 break;
         }
     }
+    
+    // ✅ NOUVEAU : Détecter si la liste des participants a changé
+    hasParticipantsChanged() {
+        if (!this.lastParticipantsList) {
+            this.lastParticipantsList = [...this.sessionData.participants];
+            return false;
+        }
+        
+        const current = [...this.sessionData.participants].sort();
+        const last = [...this.lastParticipantsList].sort();
+        
+        if (current.length !== last.length) return true;
+        
+        for (let i = 0; i < current.length; i++) {
+            if (current[i] !== last[i]) return true;
+        }
+        
+        return false;
+    }
+    
+    // ✅ NOUVEAU : Sauvegarder la session sans changer d'état
+    async saveSession() {
+        try {
+            await this.client.client
+                .from('debate_sessions')
+                .update(this.getSessionUpdateObject())
+                .eq('id', this.currentSessionId);
+        } catch (error) {
+            console.error('[DEBATE] Erreur sauvegarde:', error);
+        }
+    }
 
     async transitionToState(newState) {
         console.log(`[DEBATE] Transition: ${this.currentState} → ${newState}`);
 
         this.sessionData.stateStartTime = Date.now();
+        
+        const updateData = {
+            state: newState,
+            ...this.getSessionUpdateObject()
+        };
+        
+        console.log('[DEBATE] 📝 Données à envoyer:', updateData);
 
         try {
-            await this.client.client
+            const { data, error } = await this.client.client
                 .from('debate_sessions')
-                .update({
-                    state: newState,
-                    data: JSON.stringify(this.sessionData)
-                })
-                .eq('id', this.currentSessionId);
+                .update(updateData)
+                .eq('id', this.currentSessionId)
+                .select();
+
+            if (error) {
+                console.error('[DEBATE] ❌ Erreur complète:', error);
+                console.error('[DEBATE] Code:', error.code);
+                console.error('[DEBATE] Message:', error.message);
+                console.error('[DEBATE] Details:', error.details);
+                throw error;
+            }
 
             console.log(`[DEBATE] ✅ État changé: ${newState}`);
         } catch (error) {
             console.error('[DEBATE] Erreur transition:', error);
+            console.error('[DEBATE] Données problématiques:', updateData);
         }
     }
 
@@ -548,9 +590,7 @@ class DebateModule {
         try {
             await this.client.client
                 .from('debate_sessions')
-                .update({
-                    data: JSON.stringify(this.sessionData)
-                })
+                .update(this.getSessionUpdateObject())
                 .eq('id', this.currentSessionId);
         } catch (error) {
             console.error('[DEBATE] Erreur attribution rôles:', error);
@@ -572,7 +612,7 @@ class DebateModule {
             await this.client.client
                 .from('debate_sessions')
                 .update({
-                    data: JSON.stringify(this.sessionData)
+                    ...this.getSessionUpdateObject()
                 })
                 .eq('id', this.currentSessionId);
         } catch (error) {
@@ -661,7 +701,7 @@ class DebateModule {
             await this.client.client
                 .from('debate_sessions')
                 .update({
-                    data: JSON.stringify(this.sessionData)
+                    ...this.getSessionUpdateObject()
                 })
                 .eq('id', this.currentSessionId);
 
@@ -717,7 +757,7 @@ class DebateModule {
             await this.client.client
                 .from('debate_sessions')
                 .update({
-                    data: JSON.stringify(this.sessionData)
+                    ...this.getSessionUpdateObject()
                 })
                 .eq('id', this.currentSessionId);
 
@@ -757,7 +797,7 @@ class DebateModule {
             await this.client.client
                 .from('debate_sessions')
                 .update({
-                    data: JSON.stringify(this.sessionData)
+                    ...this.getSessionUpdateObject()
                 })
                 .eq('id', this.currentSessionId);
 
@@ -790,7 +830,7 @@ class DebateModule {
             await this.client.client
                 .from('debate_sessions')
                 .update({
-                    data: JSON.stringify(this.sessionData)
+                    ...this.getSessionUpdateObject()
                 })
                 .eq('id', this.currentSessionId);
 
@@ -883,7 +923,7 @@ class DebateModule {
                 
                 if (shouldClean) {
                     sessionsToClean.push(session.id);
-                    console.log(`[DEBATE] 🧟 Zombie: ${session.id.substring(0, 8)}... (${session.state}, ${reason})`);
+                    console.log(`[DEBATE] 🧟 Zombie: ID ${session.id} (${session.state}, ${reason})`);
                 }
             }
             
@@ -965,7 +1005,7 @@ class DebateModule {
                 await this.client.client
                     .from('debate_sessions')
                     .update({
-                        data: JSON.stringify(this.sessionData)
+                        ...this.getSessionUpdateObject()
                     })
                     .eq('id', this.currentSessionId);
                 
@@ -982,18 +1022,15 @@ class DebateModule {
                     .insert({
                         state: 'WAITING',
                         is_active: true,
-                        data: JSON.stringify({
-                            participants: [this.userId],
-                            decisionnaire: null,
-                            lawyer1: null,
-                            lawyer2: null,
-                            spectators: [],
-                            question: '',
-                            lawyerMessages: [],
-                            spectatorMessages: [],
-                            votes: {},
-                            stateStartTime: Date.now()
-                        })
+                        participants: [this.userId],
+                        decisionnaire: null,
+                        lawyer1: null,
+                        lawyer2: null,
+                        question: '',
+                        lawyer_messages: [],
+                        spectator_messages: [],
+                        votes: {},
+                        state_start_time: Date.now()
                     })
                     .select()
                     .single();
