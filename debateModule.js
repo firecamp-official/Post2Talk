@@ -273,13 +273,18 @@ class DebateModule {
     // ============================================
 
     startPlayerHeartbeat() {
-        // Envoyer un heartbeat toutes les 10 secondes (pas 3, trop agressif !)
+        // ❌ DÉSACTIVÉ : Trop lourd pour le navigateur
+        // On utilisera juste Realtime pour détecter les changements
+        console.log('[DEBATE] 💓 Heartbeat désactivé (trop lourd)');
+        return;
+        
+        /* CODE DÉSACTIVÉ
         this.playerHeartbeatInterval = setInterval(() => {
             if (this.currentSessionId && this.isActive) {
                 this.sendPlayerHeartbeat();
             }
-        }, 10000); // 10 secondes
-        console.log('[DEBATE] 💓 Heartbeat joueur démarré (10s)');
+        }, 10000);
+        */
     }
 
     async sendPlayerHeartbeat() {
@@ -303,30 +308,9 @@ class DebateModule {
     }
 
     checkActivePlayers() {
-        if (!this.sessionData.participantsHeartbeat) {
-            this.sessionData.participantsHeartbeat = {};
-        }
-        
-        const now = Date.now();
-        const TIMEOUT = 25000; // 25 secondes sans heartbeat = déconnecté (2.5× le heartbeat)
-        
-        const activePlayers = this.sessionData.participants.filter(userId => {
-            const lastSeen = this.sessionData.participantsHeartbeat[userId] || 0;
-            const inactive = (now - lastSeen) > TIMEOUT;
-            return !inactive;
-        });
-        
-        // Détecter les joueurs déconnectés
-        const disconnected = this.sessionData.participants.filter(
-            userId => !activePlayers.includes(userId)
-        );
-        
-        if (disconnected.length > 0) {
-            console.log('[DEBATE] 🔴 Joueurs inactifs détectés:', disconnected);
-            this.handlePlayersDisconnected(disconnected);
-        }
-        
-        return activePlayers;
+        // ✅ VERSION SIMPLE : On fait confiance à la liste des participants
+        // Realtime se charge de la synchronisation
+        return this.sessionData.participants || [];
     }
 
     async handlePlayersDisconnected(disconnectedPlayers) {
