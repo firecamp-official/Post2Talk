@@ -273,13 +273,13 @@ class DebateModule {
     // ============================================
 
     startPlayerHeartbeat() {
-        // Envoyer un heartbeat toutes les 3 secondes
+        // Envoyer un heartbeat toutes les 10 secondes (pas 3, trop agressif !)
         this.playerHeartbeatInterval = setInterval(() => {
             if (this.currentSessionId && this.isActive) {
                 this.sendPlayerHeartbeat();
             }
-        }, 3000);
-        console.log('[DEBATE] 💓 Heartbeat joueur démarré');
+        }, 10000); // 10 secondes
+        console.log('[DEBATE] 💓 Heartbeat joueur démarré (10s)');
     }
 
     async sendPlayerHeartbeat() {
@@ -308,7 +308,7 @@ class DebateModule {
         }
         
         const now = Date.now();
-        const TIMEOUT = 12000; // 12 secondes sans heartbeat = déconnecté
+        const TIMEOUT = 25000; // 25 secondes sans heartbeat = déconnecté (2.5× le heartbeat)
         
         const activePlayers = this.sessionData.participants.filter(userId => {
             const lastSeen = this.sessionData.participantsHeartbeat[userId] || 0;
