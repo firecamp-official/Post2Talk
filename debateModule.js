@@ -145,6 +145,13 @@ class DebateModule {
             this.updateTimerOnly();
         }, 1000);
         
+        // ✅ NOUVEAU : Timer pour vérifier la progression (indépendant de Realtime)
+        this.progressionCheckInterval = setInterval(() => {
+            if (this.isActive && this.currentSessionId) {
+                this.checkStateProgression();
+            }
+        }, 1000); // Vérifie toutes les secondes
+        
         // S'abonner aux changements en temps réel
         this.realtimeChannel = this.client.client
             .channel('debate_sessions_changes')
@@ -263,6 +270,11 @@ class DebateModule {
         if (this.timerInterval) {
             clearInterval(this.timerInterval);
             this.timerInterval = null;
+        }
+        
+        if (this.progressionCheckInterval) {
+            clearInterval(this.progressionCheckInterval);
+            this.progressionCheckInterval = null;
         }
     }
 
