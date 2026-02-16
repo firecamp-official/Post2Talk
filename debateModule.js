@@ -226,7 +226,7 @@ class DebateModule {
     // Extraire les données d'une session
     updateFromSession(session) {
         this.currentSessionId = session.id;
-        this.currentState = session.state;
+        this.currentState = session.state; // ✅ Mettre à jour l'état
         
         // ✅ Les colonnes JSONB sont déjà des objets/arrays JavaScript
         this.sessionData = {
@@ -971,7 +971,7 @@ class DebateModule {
         // CLEANUP : Nettoyer les sessions zombies avant de commencer
         await this.cleanupOldSessions();
 
-        // ✅ FIX : CHERCHER d'abord une session active existante
+        // ✅ CHERCHER d'abord une session active existante en WAITING
         const { data: existingSessions } = await this.client.client
             .from('debate_sessions')
             .select('*')
@@ -982,21 +982,9 @@ class DebateModule {
         if (existingSessions && existingSessions.length > 0) {
             // ✅ REJOINDRE la session existante
             const session = existingSessions[0];
-            this.currentSessionId = session.id;
             
-            const data = JSON.parse(session.data || '{}');
-            this.sessionData = {
-                participants: data.participants || [],
-                decisionnaire: data.decisionnaire || null,
-                lawyer1: data.lawyer1 || null,
-                lawyer2: data.lawyer2 || null,
-                spectators: data.spectators || [],
-                question: data.question || '',
-                lawyerMessages: data.lawyerMessages || [],
-                spectatorMessages: data.spectatorMessages || [],
-                votes: data.votes || {},
-                stateStartTime: data.stateStartTime || Date.now()
-            };
+            // Utiliser updateFromSession pour charger les données
+            this.updateFromSession(session);
             
             // Ajouter ce joueur s'il n'est pas déjà dans la liste
             if (!this.sessionData.participants.includes(this.userId)) {
@@ -1004,9 +992,7 @@ class DebateModule {
                 
                 await this.client.client
                     .from('debate_sessions')
-                    .update({
-                        ...this.getSessionUpdateObject()
-                    })
+                    .update(this.getSessionUpdateObject())
                     .eq('id', this.currentSessionId);
                 
                 console.log('[DEBATE] ✅ Session rejointe, participants:', this.sessionData.participants.length);
