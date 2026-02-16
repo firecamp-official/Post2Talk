@@ -226,7 +226,7 @@ class DebateModule {
     // Extraire les données d'une session
     updateFromSession(session) {
         this.currentSessionId = session.id;
-        this.currentState = session.state; // ✅ Mettre à jour l'état
+        this.currentState = session.state;
         
         // ✅ Les colonnes JSONB sont déjà des objets/arrays JavaScript
         this.sessionData = {
@@ -971,7 +971,7 @@ class DebateModule {
         // CLEANUP : Nettoyer les sessions zombies avant de commencer
         await this.cleanupOldSessions();
 
-        // ✅ CHERCHER d'abord une session active existante en WAITING
+        // ✅ FIX : CHERCHER d'abord une session active existante
         const { data: existingSessions } = await this.client.client
             .from('debate_sessions')
             .select('*')
@@ -982,9 +982,22 @@ class DebateModule {
         if (existingSessions && existingSessions.length > 0) {
             // ✅ REJOINDRE la session existante
             const session = existingSessions[0];
+            this.currentSessionId = session.id;
+            this.currentState = session.state;
             
-            // Utiliser updateFromSession pour charger les données
-            this.updateFromSession(session);
+            // ✅ Les colonnes JSONB sont déjà des objets JavaScript
+            this.sessionData = {
+                participants: session.participants || [],
+                decisionnaire: session.decisionnaire || null,
+                lawyer1: session.lawyer1 || null,
+                lawyer2: session.lawyer2 || null,
+                spectators: [],
+                question: session.question || '',
+                lawyerMessages: session.lawyer_messages || [],
+                spectatorMessages: session.spectator_messages || [],
+                votes: session.votes || {},
+                stateStartTime: session.state_start_time || Date.now()
+            };
             
             // Ajouter ce joueur s'il n'est pas déjà dans la liste
             if (!this.sessionData.participants.includes(this.userId)) {
@@ -999,6 +1012,8 @@ class DebateModule {
             } else {
                 console.log('[DEBATE] ✅ Déjà dans la session');
             }
+            
+            this.updateMyRole();
             
         } else {
             // ✅ CRÉER une nouvelle session seulement si aucune n'existe
