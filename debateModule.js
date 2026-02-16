@@ -44,6 +44,10 @@ class DebateModule {
         this.lastMessageTime = 0;
         this.messageCooldown = 2000; // 2s entre chaque message
 
+        // 🔴 Realtime channel
+        this.realtimeChannel = null;
+        this.timerInterval = null;
+
         this.init();
     }
 
@@ -54,11 +58,10 @@ class DebateModule {
         this.createDebateBadge();
         this.setupEventListeners();
         
-        // ✅ FIX INTELLIGENT : Heartbeat LÉGER pour le badge uniquement
-        // Seulement pour savoir combien de joueurs sont connectés
-        this.startBadgeHeartbeat();
+        // 🔴 REALTIME : Une seule requête initiale + écoute passive
+        this.startRealtimeSync();
 
-        console.log('✅ [DEBATE] Module initialisé');
+        console.log('✅ [DEBATE] Module initialisé avec Realtime');
     }
 
     createDebateBadge() {
@@ -131,132 +134,136 @@ class DebateModule {
     }
 
     // ============================================
-    // HEARTBEAT LÉGER POUR LE BADGE
+    // 🔴 REALTIME SYNC (remplace le heartbeat)
     // ============================================
-    // Heartbeat minimaliste qui tourne toujours en arrière-plan
-    // SEULEMENT pour mettre à jour le badge avec le nombre de participants
-    // Requête légère : juste compter les participants, pas tout charger
-    
-    startBadgeHeartbeat() {
-        this.badgeHeartbeatInterval = setInterval(async () => {
-            try {
-                // Requête ULTRA LÉGÈRE : juste l'état et le nombre de participants
-                const { data: sessions } = await this.client.client
-                    .from('debate_sessions')
-                    .select('state, data')
-                    .eq('is_active', true)
-                    .limit(1);
 
-                if (!sessions || sessions.length === 0) {
-                    this.currentState = 'WAITING';
-                    this.sessionData.participants = [];
-                } else {
-                    const session = sessions[0];
-                    this.currentState = session.state;
-                    const data = JSON.parse(session.data || '{}');
-                    this.sessionData.participants = data.participants || [];
-                }
-
-                // Mettre à jour SEULEMENT le badge
-                this.updateBadge();
-
-            } catch (error) {
-                console.error('[DEBATE] Erreur badge heartbeat:', error);
-            }
-        }, 5000); // 5 secondes - Suffisant pour le badge
+    startRealtimeSync() {
+        console.log('[DEBATE] 🔴 Démarrage Realtime sync...');
         
-        console.log('[DEBATE] 🏷️ Badge heartbeat démarré (5s)');
-    }
-
-    // ============================================
-    // HEARTBEAT COMPLET POUR LE MODULE OUVERT
-    // ============================================
-
-    startGlobalHeartbeat() {
-        // Timer local (1s) - SANS requête DB
+        // Timer local (1s) pour l'affichage seulement - PAS de requête
         this.timerInterval = setInterval(() => {
             this.updateTimerOnly();
         }, 1000);
-
-        // Heartbeat optimisé (2s) - Compromis entre réactivité et requêtes
-        this.heartbeatInterval = setInterval(async () => {
-            try {
-                // Toujours récupérer les données
-                const { data: sessions } = await this.client.client
-                    .from('debate_sessions')
-                    .select('*')
-                    .eq('is_active', true)
-                    .limit(1);
-
-                const oldState = this.currentState;
-                const oldMessagesCount = this.sessionData.lawyerMessages.length + this.sessionData.spectatorMessages.length;
-
-                if (!sessions || sessions.length === 0) {
-                    this.currentSessionId = null;
-                    this.currentState = 'WAITING';
-                    this.sessionData.participants = [];
-                    this.myRole = null;
-                } else {
-                    const session = sessions[0];
-                    this.currentSessionId = session.id;
-                    this.currentState = session.state;
-
-                    const data = JSON.parse(session.data || '{}');
-                    this.sessionData = {
-                        participants: data.participants || [],
-                        decisionnaire: data.decisionnaire || null,
-                        lawyer1: data.lawyer1 || null,
-                        lawyer2: data.lawyer2 || null,
-                        spectators: data.spectators || [],
-                        question: data.question || '',
-                        lawyerMessages: data.lawyerMessages || [],
-                        spectatorMessages: data.spectatorMessages || [],
-                        votes: data.votes || {},
-                        stateStartTime: data.stateStartTime || Date.now()
-                    };
-
-                    this.updateMyRole();
-                }
-
-                // Mettre à jour le badge (toujours)
-                this.updateBadge();
-
-                // Décider comment mettre à jour l'UI
-                if (this.isActive) {
-                    const activeElement = document.activeElement;
-                    const isInputFocused = activeElement && (
-                        activeElement.tagName === 'INPUT' ||
-                        activeElement.tagName === 'TEXTAREA'
-                    );
-
-                    const stateChanged = oldState !== this.currentState;
-                    const newMessagesCount = this.sessionData.lawyerMessages.length + this.sessionData.spectatorMessages.length;
-                    const messagesChanged = newMessagesCount !== oldMessagesCount;
-
-                    if (stateChanged) {
-                        // TOUJOURS update si changement d'état (même si input focus)
-                        this.updateUI();
-                    } else if (isInputFocused) {
-                        // Input focus : update SEULEMENT les messages (pas le DOM des inputs)
-                        if (messagesChanged && this.currentState === 'DEBATE') {
-                            this.updateDebateMessagesOnly();
-                        } else if (this.currentState === 'VOTING') {
-                            this.updateVoteCountsOnly();
-                        }
-                    } else {
-                        // Pas de focus : update normal
-                        this.updateUI();
-                    }
-
-                    await this.checkStateProgression();
-                }
-
-            } catch (error) {
-                console.error('[DEBATE] Erreur heartbeat:', error);
-            }
-        }, 2000); // 2 secondes - Bon compromis
         
-        console.log('[DEBATE] 🔄 Heartbeat complet démarré (2s)');
+        // S'abonner aux changements en temps réel
+        this.realtimeChannel = this.client.client
+            .channel('debate_sessions_changes')
+            .on(
+                'postgres_changes',
+                {
+                    event: '*', // INSERT, UPDATE, DELETE
+                    schema: 'public',
+                    table: 'debate_sessions',
+                    filter: 'is_active=eq.true'
+                },
+                (payload) => {
+                    console.log('[DEBATE] 📡 Changement détecté');
+                    this.handleRealtimeUpdate(payload);
+                }
+            )
+            .subscribe((status) => {
+                if (status === 'SUBSCRIBED') {
+                    console.log('[DEBATE] ✅ Realtime connecté');
+                }
+            });
+        
+        // Chargement initial (une seule requête)
+        this.loadInitialSession();
+    }
+
+    // Chargement initial de la session
+    async loadInitialSession() {
+        try {
+            const { data: sessions } = await this.client.client
+                .from('debate_sessions')
+                .select('*')
+                .eq('is_active', true)
+                .limit(1);
+            
+            if (!sessions || sessions.length === 0) {
+                this.currentSessionId = null;
+                this.currentState = 'WAITING';
+                this.sessionData.participants = [];
+                this.myRole = null;
+            } else {
+                const session = sessions[0];
+                this.updateFromSession(session);
+            }
+            
+            this.updateBadge();
+            if (this.isActive) {
+                this.updateUI();
+            }
+        } catch (error) {
+            console.error('[DEBATE] Erreur chargement initial:', error);
+        }
+    }
+
+    // Gérer les updates Realtime
+    async handleRealtimeUpdate(payload) {
+        const { eventType, new: newRecord, old: oldRecord } = payload;
+        
+        if (eventType === 'INSERT' || eventType === 'UPDATE') {
+            if (newRecord && newRecord.is_active) {
+                this.updateFromSession(newRecord);
+            }
+        } else if (eventType === 'DELETE') {
+            // Session supprimée
+            this.currentSessionId = null;
+            this.currentState = 'WAITING';
+            this.sessionData.participants = [];
+            this.myRole = null;
+        }
+        
+        // Mettre à jour l'UI
+        this.updateBadge();
+        if (this.isActive) {
+            this.updateUI();
+            await this.checkStateProgression();
+        }
+    }
+
+    // Extraire les données d'une session
+    updateFromSession(session) {
+        this.currentSessionId = session.id;
+        this.currentState = session.state;
+        
+        // ✅ FIX : session.data peut être string OU objet selon la source
+        let data;
+        if (typeof session.data === 'string') {
+            data = JSON.parse(session.data || '{}');
+        } else {
+            data = session.data || {};
+        }
+        
+        this.sessionData = {
+            participants: data.participants || [],
+            decisionnaire: data.decisionnaire || null,
+            lawyer1: data.lawyer1 || null,
+            lawyer2: data.lawyer2 || null,
+            spectators: data.spectators || [],
+            question: data.question || '',
+            lawyerMessages: data.lawyerMessages || [],
+            spectatorMessages: data.spectatorMessages || [],
+            votes: data.votes || {},
+            stateStartTime: data.stateStartTime || Date.now()
+        };
+        
+        this.updateMyRole();
+    }
+
+    // Arrêter le Realtime (si besoin)
+    stopRealtimeSync() {
+        if (this.realtimeChannel) {
+            this.client.client.removeChannel(this.realtimeChannel);
+            this.realtimeChannel = null;
+            console.log('[DEBATE] ⏹️ Realtime déconnecté');
+        }
+        
+        if (this.timerInterval) {
+            clearInterval(this.timerInterval);
+            this.timerInterval = null;
+        }
     }
 
     // Mise à jour du timer uniquement (sans requête DB)
@@ -951,11 +958,6 @@ class DebateModule {
             modal.classList.add('active');
         }
 
-        // ✅ Démarrer le heartbeat COMPLET à l'ouverture
-        if (!this.heartbeatInterval) {
-            this.startGlobalHeartbeat();
-        }
-
         this.updateUI();
 
         if (this.audio) {
@@ -969,19 +971,6 @@ class DebateModule {
         const modal = document.getElementById('debateModuleModal');
         if (modal) {
             modal.classList.remove('active');
-        }
-        
-        // ✅ Arrêter SEULEMENT le heartbeat complet (2s)
-        // Le badge heartbeat (5s) continue en arrière-plan
-        if (this.heartbeatInterval) {
-            clearInterval(this.heartbeatInterval);
-            this.heartbeatInterval = null;
-            console.log('[DEBATE] ⏹️ Heartbeat complet arrêté');
-        }
-        
-        if (this.timerInterval) {
-            clearInterval(this.timerInterval);
-            this.timerInterval = null;
         }
         
         // Si on ferme pendant WAITING et qu'on est seul, nettoyer la session
