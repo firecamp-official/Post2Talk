@@ -532,14 +532,6 @@ class MurDeParole {
         this.loadPostIts();
         this.loadDebates();
         
-        // 🚀 OPTIMISATION : Polling intelligent au lieu de Realtime pour les débats
-        // Économie de 60% de requêtes
-        this.debatesPolling = setInterval(() => {
-            console.log('[POLLING] Rafraîchissement débats...');
-            this.loadDebates();
-        }, 30000); // 30 secondes
-        console.log('✅ Polling débats activé (30s)');
-        
         this.updateStatus();
         this.startTimerUpdates(); // Démarrer la mise à jour des timers
         
