@@ -1,15 +1,28 @@
 // ============================================
-// Client Supabase avec gestion RLS
+// 🔴 CLIENT SUPABASE AVEC REALTIME
 // ============================================
+// Version optimisée avec écoute temps réel
 
 class SupabaseClient {
     constructor() {
         this.client = null;
         this.isInitialized = false;
+        
+        // Channels Realtime
+        this.postitsChannel = null;
+        this.debatesChannel = null;
+        
+        // Callbacks pour les updates Realtime
+        this.onPostitsUpdate = null;
+        this.onDebatesUpdate = null;
+        
         this.initializeClient();
     }
     
-    // Initialiser le client Supabase
+    // ============================================
+    // INITIALISATION
+    // ============================================
+    
     initializeClient() {
         try {
             if (!window.SUPABASE_CONFIG) {
@@ -26,7 +39,7 @@ class SupabaseClient {
             
             this.client = supabase.createClient(url, anonKey, options);
             this.isInitialized = true;
-            console.log('✅ Client Supabase initialisé');
+            console.log('✅ Client Supabase initialisé avec Realtime');
         } catch (error) {
             console.error('❌ Erreur initialisation Supabase:', error);
             this.isInitialized = false;
@@ -34,10 +47,118 @@ class SupabaseClient {
     }
     
     // ============================================
+    // 🔴 REALTIME : POST-ITS
+    // ============================================
+    
+    subscribeToPostits(callback) {
+        if (!this.isInitialized) return;
+        
+        this.onPostitsUpdate = callback;
+        
+        this.postitsChannel = this.client
+            .channel('postits_changes')
+            .on(
+                'postgres_changes',
+                {
+                    event: '*',
+                    schema: 'public',
+                    table: 'postits'
+                },
+                (payload) => {
+                    console.log('[REALTIME] Post-it changé:', payload.eventType);
+                    if (this.onPostitsUpdate) {
+                        this.onPostitsUpdate(payload);
+                    }
+                }
+            )
+            .subscribe((status) => {
+                if (status === 'SUBSCRIBED') {
+                    console.log('🔴 Realtime post-its : CONNECTÉ');
+                }
+            });
+    }
+    
+    unsubscribeFromPostits() {
+        if (this.postitsChannel) {
+            this.client.removeChannel(this.postitsChannel);
+            this.postitsChannel = null;
+            console.log('⏹️ Realtime post-its : DÉCONNECTÉ');
+        }
+    }
+    
+    // ============================================
+    // 🔴 REALTIME : DÉBATS
+    // ============================================
+    
+    subscribeToDebates(callback) {
+        if (!this.isInitialized) return;
+        
+        this.onDebatesUpdate = callback;
+        
+        // Canal pour la table debates
+        this.debatesChannel = this.client
+            .channel('debates_changes')
+            .on(
+                'postgres_changes',
+                {
+                    event: '*',
+                    schema: 'public',
+                    table: 'debates'
+                },
+                (payload) => {
+                    console.log('[REALTIME] Débat changé');
+                    if (this.onDebatesUpdate) {
+                        this.onDebatesUpdate(payload);
+                    }
+                }
+            )
+            .on(
+                'postgres_changes',
+                {
+                    event: '*',
+                    schema: 'public',
+                    table: 'debate_votes'
+                },
+                (payload) => {
+                    console.log('[REALTIME] Vote changé');
+                    if (this.onDebatesUpdate) {
+                        this.onDebatesUpdate(payload);
+                    }
+                }
+            )
+            .on(
+                'postgres_changes',
+                {
+                    event: '*',
+                    schema: 'public',
+                    table: 'debate_comments'
+                },
+                (payload) => {
+                    console.log('[REALTIME] Commentaire changé');
+                    if (this.onDebatesUpdate) {
+                        this.onDebatesUpdate(payload);
+                    }
+                }
+            )
+            .subscribe((status) => {
+                if (status === 'SUBSCRIBED') {
+                    console.log('🔴 Realtime débats : CONNECTÉ');
+                }
+            });
+    }
+    
+    unsubscribeFromDebates() {
+        if (this.debatesChannel) {
+            this.client.removeChannel(this.debatesChannel);
+            this.debatesChannel = null;
+            console.log('⏹️ Realtime débats : DÉCONNECTÉ');
+        }
+    }
+    
+    // ============================================
     // GESTION DES POST-ITS
     // ============================================
     
-    // Créer un nouveau post-it
     async createPostIt(data) {
         if (!this.isInitialized) {
             return { error: 'Supabase non initialisé' };
@@ -64,8 +185,7 @@ class SupabaseClient {
                 color: data.color,
                 position_x: data.position_x,
                 position_y: data.position_y,
-                rotation: data.rotation,
-                created_at: new Date().toISOString()
+                rotation: data.rotation
             };
             
             const { data: result, error } = await this.client
@@ -76,6 +196,7 @@ class SupabaseClient {
             
             if (error) throw error;
             
+            // Pas besoin de recharger ! Realtime s'en charge ✅
             return { data: result };
         } catch (error) {
             console.error('Erreur création post-it:', error);
@@ -83,7 +204,6 @@ class SupabaseClient {
         }
     }
     
-    // Récupérer tous les post-its
     async getPostIts() {
         if (!this.isInitialized) {
             return { data: [] };
@@ -93,26 +213,18 @@ class SupabaseClient {
             const { data, error } = await this.client
                 .from('postits')
                 .select('*')
+                .gte('created_at', new Date(Date.now() - 3600000).toISOString()) // < 1h
                 .order('created_at', { ascending: false });
             
             if (error) throw error;
             
-            // Filtrer les post-its expirés (>1h)
-            const validPostIts = data.filter(postit => {
-                const createdAt = new Date(postit.created_at);
-                const now = new Date();
-                const hoursDiff = (now - createdAt) / (1000 * 60 * 60);
-                return hoursDiff < 1; // Moins d'1 heure
-            });
-            
-            return { data: validPostIts };
+            return { data };
         } catch (error) {
             console.error('Erreur récupération post-its:', error);
             return { data: [] };
         }
     }
     
-    // Supprimer un post-it
     async deletePostIt(id) {
         if (!this.isInitialized) {
             return { error: 'Supabase non initialisé' };
@@ -137,43 +249,22 @@ class SupabaseClient {
     // GESTION DES SIGNALEMENTS
     // ============================================
     
-    // Signaler un post-it
     async reportPostIt(postItId, userId) {
         if (!this.isInitialized) {
             return { error: 'Supabase non initialisé' };
         }
         
         try {
-            // Vérifier d'abord si l'utilisateur a déjà signalé ce post-it
-            const { data: existingReport } = await this.client
-                .from('reports')
-                .select('*')
-                .eq('postit_id', postItId)
-                .eq('user_id', userId)
-                .single();
-            
-            if (existingReport) {
-                // L'utilisateur a déjà signalé ce post-it
-                return { 
-                    success: false, 
-                    error: 'Tu as déjà signalé ce message',
-                    alreadyReported: true 
-                };
-            }
-            
             // Créer le signalement
             const { error: reportError } = await this.client
                 .from('reports')
                 .insert({
                     postit_id: postItId,
-                    user_id: userId,
-                    created_at: new Date().toISOString()
+                    user_id: userId
                 });
             
-            // Gérer l'erreur de duplicate (au cas où race condition)
             if (reportError) {
                 if (reportError.code === '23505') {
-                    // Duplicate key - l'utilisateur a déjà signalé
                     return { 
                         success: false, 
                         error: 'Tu as déjà signalé ce message',
@@ -208,7 +299,6 @@ class SupabaseClient {
     // GESTION DES DÉBATS
     // ============================================
     
-    // Créer un débat
     async createDebate(data) {
         if (!this.isInitialized) {
             return { error: 'Supabase non initialisé' };
@@ -229,8 +319,7 @@ class SupabaseClient {
             
             const debateData = {
                 title: this.sanitizeHTML(titleValidation.filtered),
-                description: this.sanitizeHTML(descValidation.filtered),
-                created_at: new Date().toISOString()
+                description: this.sanitizeHTML(descValidation.filtered)
             };
             
             const { data: result, error } = await this.client
@@ -241,6 +330,7 @@ class SupabaseClient {
             
             if (error) throw error;
             
+            // Pas besoin de recharger ! Realtime s'en charge ✅
             return { data: result };
         } catch (error) {
             console.error('Erreur création débat:', error);
@@ -248,7 +338,6 @@ class SupabaseClient {
         }
     }
     
-    // Récupérer tous les débats
     async getDebates() {
         if (!this.isInitialized) {
             return { data: [] };
@@ -281,44 +370,26 @@ class SupabaseClient {
         }
     }
     
-    // Voter sur un débat
     async voteDebate(debateId, userId, voteType) {
         if (!this.isInitialized) {
             return { error: 'Supabase non initialisé' };
         }
         
         try {
-            // Vérifier si déjà voté
-            const { data: existingVote } = await this.client
+            // Upsert : créer ou mettre à jour
+            const { error } = await this.client
                 .from('debate_votes')
-                .select('*')
-                .eq('debate_id', debateId)
-                .eq('user_id', userId)
-                .single();
+                .upsert({
+                    debate_id: debateId,
+                    user_id: userId,
+                    vote_type: voteType
+                }, {
+                    onConflict: 'debate_id,user_id'
+                });
             
-            if (existingVote) {
-                // Mettre à jour le vote
-                const { error } = await this.client
-                    .from('debate_votes')
-                    .update({ vote_type: voteType })
-                    .eq('debate_id', debateId)
-                    .eq('user_id', userId);
-                
-                if (error) throw error;
-            } else {
-                // Créer nouveau vote
-                const { error } = await this.client
-                    .from('debate_votes')
-                    .insert({
-                        debate_id: debateId,
-                        user_id: userId,
-                        vote_type: voteType,
-                        created_at: new Date().toISOString()
-                    });
-                
-                if (error) throw error;
-            }
+            if (error) throw error;
             
+            // Pas besoin de recharger ! Realtime s'en charge ✅
             return { success: true };
         } catch (error) {
             console.error('Erreur vote:', error);
@@ -326,7 +397,6 @@ class SupabaseClient {
         }
     }
     
-    // Ajouter un commentaire à un débat
     async addDebateComment(debateId, userId, content) {
         if (!this.isInitialized) {
             return { error: 'Supabase non initialisé' };
@@ -344,14 +414,14 @@ class SupabaseClient {
                 .insert({
                     debate_id: debateId,
                     user_id: userId,
-                    content: this.sanitizeHTML(validation.filtered),
-                    created_at: new Date().toISOString()
+                    content: this.sanitizeHTML(validation.filtered)
                 })
                 .select()
                 .single();
             
             if (error) throw error;
             
+            // Pas besoin de recharger ! Realtime s'en charge ✅
             return { data };
         } catch (error) {
             console.error('Erreur ajout commentaire:', error);
@@ -359,7 +429,6 @@ class SupabaseClient {
         }
     }
     
-    // Récupérer les commentaires d'un débat
     async getDebateComments(debateId) {
         if (!this.isInitialized) {
             return { data: [] };
@@ -385,14 +454,12 @@ class SupabaseClient {
     // UTILITAIRES
     // ============================================
     
-    // Nettoyer HTML pour prévenir XSS
     sanitizeHTML(text) {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
     }
     
-    // Générer un ID utilisateur unique (stocké en localStorage)
     getUserId() {
         let userId = localStorage.getItem('mur_user_id');
         if (!userId) {
