@@ -217,24 +217,17 @@ class DebateModule {
             if (newRecord && newRecord.is_active) {
                 this.updateFromSession(newRecord);
             } else if (newRecord && !newRecord.is_active && this.currentSessionId === newRecord.id) {
-                // Session devenue inactive → fin abrupte (ex: les deux avocats partis)
+                // Session devenue inactive → reset complet
                 console.log('[DEBATE] 📡 Session désactivée par un pair');
                 if (this.isActive) {
-                    this.showDebateToast('💀 La partie a été interrompue — joueurs insuffisants.', 'error');
+                    this.showDebateToast('💀 La partie a été interrompue.', 'error');
                 }
-                this.currentSessionId = null;
-                this.currentState = 'WAITING';
-                this.sessionData.participants = [];
-                this.myRole = null;
-                this._previousParticipants = null;
+                this._resetLocalState();
             }
         } else if (eventType === 'DELETE') {
             // Session supprimée
-            this.currentSessionId = null;
-            this.currentState = 'WAITING';
-            this.sessionData.participants = [];
-            this.myRole = null;
-            this._previousParticipants = null;
+            console.log('[DEBATE] 📡 Session supprimée');
+            this._resetLocalState();
         }
         
         // Mettre à jour l'UI
@@ -277,8 +270,12 @@ class DebateModule {
         
         this.updateMyRole();
         
-        // Détecter les déconnexions
-        this._handleDisconnections(previousParticipants, this.sessionData.participants);
+        // Détecter les déconnexions seulement si la liste a vraiment changé
+        const currentIds = [...this.sessionData.participants].sort().join(',');
+        const previousIds = [...previousParticipants].sort().join(',');
+        if (previousIds !== currentIds) {
+            this._handleDisconnections(previousParticipants, this.sessionData.participants);
+        }
         this._previousParticipants = [...this.sessionData.participants];
     }
     
@@ -516,9 +513,37 @@ class DebateModule {
 
             case 'QUESTION':
             case 'DEBATE':
-            case 'VOTING':
-                // ✅ Pendant la partie : si qlq quitte, continuer quand même
-                // Les nouveaux arrivants seront spectateurs automatiquement
+            case 'VOTING': {
+                // Filet de sécurité : vérifier les avocats depuis le timer (si Realtime a raté un départ)
+                const l1 = this.sessionData.lawyer1;
+                const l2 = this.sessionData.lawyer2;
+                const participants = this.sessionData.participants;
+                const lockKey = `${this.currentSessionId}_${this.currentState}`;
+                
+                if (l1 && l2 && this._disconnectionHandled !== lockKey) {
+                    const l1Present = participants.includes(l1);
+                    const l2Present = participants.includes(l2);
+                    
+                    if (!l1Present && !l2Present) {
+                        this._disconnectionHandled = lockKey;
+                        console.log('[DEBATE] ⏱️ Filet sécurité: les deux avocats absents');
+                        if (this.audio) this.audio.playSound('debatEnd');
+                        setTimeout(() => this._endSessionAbruptly('Les deux avocats ont quitté la partie'), 500);
+                        break;
+                    } else if (!l1Present) {
+                        this._disconnectionHandled = lockKey;
+                        console.log('[DEBATE] ⏱️ Filet sécurité: Avocat 1 absent');
+                        if (this.audio) this.audio.playSound('debatEnd');
+                        setTimeout(() => this._endSessionWithForfeit('lawyer2', 'Avocat 1 a abandonné la partie'), 500);
+                        break;
+                    } else if (!l2Present) {
+                        this._disconnectionHandled = lockKey;
+                        console.log('[DEBATE] ⏱️ Filet sécurité: Avocat 2 absent');
+                        if (this.audio) this.audio.playSound('debatEnd');
+                        setTimeout(() => this._endSessionWithForfeit('lawyer1', 'Avocat 2 a abandonné la partie'), 500);
+                        break;
+                    }
+                }
                 
                 if (this.currentState === 'QUESTION' && elapsed >= this.config.questionTime) {
                     setTimeout(async () => {
@@ -533,6 +558,7 @@ class DebateModule {
                     setTimeout(() => this.transitionToState('RESULT'), randomDelay);
                 }
                 break;
+            }
 
             case 'RESULT':
                 if (elapsed >= this.config.resultTime) {
@@ -672,21 +698,7 @@ class DebateModule {
             console.log('[DEBATE] ✅ Session fermée:', this.currentSessionId);
             
             // Réinitialiser l'état local
-            this.currentSessionId = null;
-            this.currentState = 'WAITING';
-            this.myRole = null;
-            this.sessionData = {
-                participants: [],
-                decisionnaire: null,
-                lawyer1: null,
-                lawyer2: null,
-                spectators: [],
-                question: '',
-                lawyerMessages: [],
-                spectatorMessages: [],
-                votes: {},
-                stateStartTime: Date.now()
-            };
+            this._resetLocalState();
 
         } catch (error) {
             console.error('[DEBATE] Erreur fin session:', error);
@@ -786,6 +798,28 @@ class DebateModule {
         if (decisionnaireLeft && (this.currentState === 'DEBATE' || this.currentState === 'VOTING')) {
             this.showDebateToast('⚖️ Le décisionnaire a quitté — le débat continue !', 'warning');
         }
+    }
+
+    /** Réinitialise tout l'état local (appelé quand la session se termine) */
+    _resetLocalState() {
+        this.currentSessionId = null;
+        this.currentState = 'WAITING';
+        this.myRole = null;
+        this._previousParticipants = null;
+        this._disconnectionHandled = false;
+        this.sessionData = {
+            participants: [],
+            decisionnaire: null,
+            lawyer1: null,
+            lawyer2: null,
+            spectators: [],
+            question: '',
+            lawyerMessages: [],
+            spectatorMessages: [],
+            votes: {},
+            stateStartTime: Date.now(),
+            forfeitReason: null
+        };
     }
 
     /** Indique si ce client est le leader de la session (premier participant) */
@@ -1174,21 +1208,22 @@ class DebateModule {
         // CLEANUP : Nettoyer les sessions zombies avant de commencer
         await this.cleanupOldSessions();
 
-        // ✅ FIX : CHERCHER d'abord une session active existante
-        const { data: existingSessions } = await this.client.client
+        // Chercher UNE session active (WAITING ou en cours)
+        const { data: allActiveSessions } = await this.client.client
             .from('debate_sessions')
             .select('*')
             .eq('is_active', true)
-            .eq('state', 'WAITING')
+            .order('created_at', { ascending: false })
             .limit(1);
 
-        if (existingSessions && existingSessions.length > 0) {
-            // ✅ REJOINDRE la session existante
-            const session = existingSessions[0];
+        const existingSession = allActiveSessions?.[0] || null;
+
+        if (existingSession) {
+            // Rejoindre la session existante (peu importe son état)
+            const session = existingSession;
             this.currentSessionId = session.id;
             this.currentState = session.state;
-            
-            // ✅ Les colonnes JSONB sont déjà des objets JavaScript
+
             this.sessionData = {
                 participants: session.participants || [],
                 decisionnaire: session.decisionnaire || null,
@@ -1199,27 +1234,34 @@ class DebateModule {
                 lawyerMessages: session.lawyer_messages || [],
                 spectatorMessages: session.spectator_messages || [],
                 votes: session.votes || {},
-                stateStartTime: session.state_start_time || Date.now()
+                stateStartTime: session.state_start_time || Date.now(),
+                forfeitReason: session.forfeit_reason || null
             };
-            
-            // Ajouter ce joueur s'il n'est pas déjà dans la liste
+
+            // Ajouter ce joueur SEULEMENT si la partie est en WAITING
+            // (pendant la partie, les nouveaux arrivants observent sans modifier la liste)
+            const inGameStates = ['QUESTION', 'DEBATE', 'VOTING', 'RESULT'];
             if (!this.sessionData.participants.includes(this.userId)) {
-                this.sessionData.participants.push(this.userId);
-                
-                await this.client.client
-                    .from('debate_sessions')
-                    .update(this.getSessionUpdateObject())
-                    .eq('id', this.currentSessionId);
-                
-                console.log('[DEBATE] ✅ Session rejointe, participants:', this.sessionData.participants.length);
+                if (!inGameStates.includes(this.currentState)) {
+                    // Lobby : on rejoint
+                    this.sessionData.participants.push(this.userId);
+                    await this.client.client
+                        .from('debate_sessions')
+                        .update(this.getSessionUpdateObject())
+                        .eq('id', this.currentSessionId);
+                    console.log('[DEBATE] ✅ Session WAITING rejointe, participants:', this.sessionData.participants.length);
+                } else {
+                    // Partie en cours : on observe sans modifier la liste
+                    console.log('[DEBATE] 👁️ Partie en cours, observation sans rejoindre');
+                }
             } else {
                 console.log('[DEBATE] ✅ Déjà dans la session');
             }
-            
+
             this.updateMyRole();
-            
+
         } else {
-            // ✅ CRÉER une nouvelle session seulement si aucune n'existe
+            // Créer une nouvelle session
             try {
                 const { data, error } = await this.client.client
                     .from('debate_sessions')
@@ -1234,7 +1276,8 @@ class DebateModule {
                         lawyer_messages: [],
                         spectator_messages: [],
                         votes: {},
-                        state_start_time: Date.now()
+                        state_start_time: Date.now(),
+                        forfeit_reason: null
                     })
                     .select()
                     .single();
@@ -1243,27 +1286,25 @@ class DebateModule {
 
                 this.currentSessionId = data.id;
                 this.sessionData.participants = [this.userId];
+                this.sessionData.stateStartTime = Date.now();
                 console.log('[DEBATE] ✅ Nouvelle session créée');
             } catch (error) {
                 console.error('[DEBATE] Erreur création:', error);
+                return; // Sortir si la création échoue
             }
         }
 
         this.isActive = true;
 
         const modal = document.getElementById('debateModuleModal');
-        if (modal) {
-            modal.classList.add('active');
-        }
+        if (modal) modal.classList.add('active');
 
-        // Snapshot de présence initialisé ici (évite les faux positifs au premier chargement)
+        // Initialiser le snapshot APRÈS avoir tout chargé (évite faux positifs)
         this._previousParticipants = [...(this.sessionData.participants || [])];
+        this._disconnectionHandled = false;
 
         this.updateUI();
-
-        if (this.audio) {
-            this.audio.playSound('setPostIt');
-        }
+        if (this.audio) this.audio.playSound('setPostIt');
     }
 
     closeDebateModule() {
@@ -1283,36 +1324,30 @@ class DebateModule {
     _leaveSession() {
         if (!this.currentSessionId) return;
         
-        const prevParticipants = [...this.sessionData.participants];
-        this.sessionData.participants = this.sessionData.participants.filter(uid => uid !== this.userId);
+        const sessionId = this.currentSessionId;
+        const newParticipants = this.sessionData.participants.filter(uid => uid !== this.userId);
         
-        // Snapshot immédiat pour éviter de retrigger la détection sur soi-même
-        this._previousParticipants = [...this.sessionData.participants];
+        // Reset local immédiat (évite double-déclenchement)
+        this._resetLocalState();
         
-        // Si on est seul et en WAITING → supprimer la session
-        if (this.currentState === 'WAITING' && this.sessionData.participants.length === 0) {
-            console.log('[DEBATE] 🧹 Dernière personne partie, nettoyage session WAITING');
+        // Si plus personne → désactiver la session
+        if (newParticipants.length === 0) {
+            console.log('[DEBATE] 🧹 Dernière personne partie, désactivation session');
             this.client.client
                 .from('debate_sessions')
                 .update({ is_active: false })
-                .eq('id', this.currentSessionId)
-                .then(() => { this.currentSessionId = null; })
-                .catch(err => console.error('[DEBATE] Erreur nettoyage:', err));
+                .eq('id', sessionId)
+                .catch(err => console.error('[DEBATE] Erreur désactivation:', err));
             return;
         }
         
-        // Sinon : mettre à jour les participants dans la DB (laisse les autres gérer la logique)
+        // Sinon : retirer juste ce joueur de la liste
+        console.log('[DEBATE] 👋 Retrait de la session, participants restants:', newParticipants.length);
         this.client.client
             .from('debate_sessions')
-            .update(this.getSessionUpdateObject())
-            .eq('id', this.currentSessionId)
-            .then(() => {
-                console.log('[DEBATE] ✅ Joueur retiré des participants');
-                this.currentSessionId = null;
-                this.currentState = 'WAITING';
-                this.myRole = null;
-            })
-            .catch(err => console.error('[DEBATE] Erreur départ:', err));
+            .update({ participants: newParticipants })
+            .eq('id', sessionId)
+            .catch(err => console.error('[DEBATE] Erreur retrait:', err));
     }
 
     // ============================================
