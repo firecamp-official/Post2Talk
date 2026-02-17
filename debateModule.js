@@ -143,9 +143,13 @@ class DebateModule {
     startRealtimeSync() {
         console.log('[DEBATE] 🔴 Démarrage Realtime sync...');
         
-        // Timer local (1s) pour l'affichage seulement - PAS de requête
+        // Timer local (1s) : affichage + vérification des transitions d'état
         this.timerInterval = setInterval(() => {
             this.updateTimerOnly();
+            // Le leader vérifie si une transition est nécessaire (même sans event Realtime entrant)
+            if (this.currentSessionId && this.currentState !== 'WAITING') {
+                this.checkStateProgression();
+            }
         }, 1000);
         
         // S'abonner aux changements en temps réel
