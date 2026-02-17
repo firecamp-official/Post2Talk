@@ -1250,10 +1250,9 @@ class DebateModule {
             modal.classList.remove('active');
         }
         
-        // Retirer le joueur de la liste des participants si une session est active
-        if (this.currentSessionId && this.sessionData.participants.includes(this.userId)) {
-            this._leaveSession();
-        }
+        // ⚠️ On NE retire PAS le joueur des participants ici :
+        // fermer la modal ≠ quitter la partie.
+        // Le retrait se fait uniquement à la fermeture de la page (beforeunload → _leaveSession).
     }
 
     /** Retire ce joueur des participants et met à jour la DB */
