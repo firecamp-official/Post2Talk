@@ -253,6 +253,11 @@ class DebateModule {
             : (this.sessionData.participants ? [...this.sessionData.participants] : []);
 
         this.currentSessionId = session.id;
+        
+        // Reset du verrou de déconnexion si l'état change
+        if (this.currentState !== session.state) {
+            this._disconnectionHandled = false;
+        }
         this.currentState = session.state;
         
         // ✅ Les colonnes JSONB sont déjà des objets/arrays JavaScript
@@ -266,7 +271,8 @@ class DebateModule {
             lawyerMessages: session.lawyer_messages || [],
             spectatorMessages: session.spectator_messages || [],
             votes: session.votes || {},
-            stateStartTime: session.state_start_time || Date.now()
+            stateStartTime: session.state_start_time || Date.now(),
+            forfeitReason: session.forfeit_reason || null
         };
         
         this.updateMyRole();
@@ -722,7 +728,7 @@ class DebateModule {
             if (this.audio) this.audio.playSound('debatEnd');
             // Seul le leader termine
             if (this.sessionData.participants[0] === this.userId || this.userId === lawyer1 || this.userId === lawyer2) {
-                setTimeout(() => this._endSessionAbruptly('both_left'), 1500);
+                setTimeout(() => this._endSessionAbruptly('Les deux avocats ont quitté la partie'), 2000);
             }
             return;
         }
@@ -733,7 +739,7 @@ class DebateModule {
             this.showDebateToast('🏃 L\'Avocat 1 a quitté la partie — Avocat 2 gagne !', 'error');
             if (this.audio) this.audio.playSound('debatEnd');
             if (this._isLeader()) {
-                setTimeout(() => this._endSessionWithForfeit('lawyer2'), 1500);
+                setTimeout(() => this._endSessionWithForfeit('lawyer2', 'Avocat 1 a abandonné la partie'), 2000);
             }
             return;
         }
@@ -744,7 +750,7 @@ class DebateModule {
             this.showDebateToast('🏃 L\'Avocat 2 a quitté la partie — Avocat 1 gagne !', 'error');
             if (this.audio) this.audio.playSound('debatEnd');
             if (this._isLeader()) {
-                setTimeout(() => this._endSessionWithForfeit('lawyer1'), 1500);
+                setTimeout(() => this._endSessionWithForfeit('lawyer1', 'Avocat 2 a abandonné la partie'), 2000);
             }
             return;
         }
@@ -789,32 +795,31 @@ class DebateModule {
     }
 
     /** Termine la session en déclarant un gagnant par forfait */
-    async _endSessionWithForfeit(winner) {
+    async _endSessionWithForfeit(winner, reason) {
         if (!this.currentSessionId) return;
         
-        console.log('[DEBATE] 🏁 Fin par forfait, gagnant:', winner);
+        console.log('[DEBATE] 🏁 Fin par forfait, gagnant:', winner, 'raison:', reason);
         
-        // Simuler un résultat écrasant pour le gagnant
-        const fakeVotes = {};
+        // Votes fictifs : tout le monde vote pour le gagnant
+        const fakeVotes = { '__forfeit__': winner };
         const spectators = this.sessionData.participants.filter(
             uid => uid !== this.sessionData.lawyer1 &&
                    uid !== this.sessionData.lawyer2 &&
                    uid !== this.sessionData.decisionnaire
         );
-        // Au moins un vote fictif pour déclencher l'affichage
-        fakeVotes['__forfeit__'] = winner;
-        if (spectators.length > 0) {
-            spectators.forEach(s => { fakeVotes[s] = winner; });
-        }
+        spectators.forEach(s => { fakeVotes[s] = winner; });
         
         this.sessionData.votes = fakeVotes;
         this.sessionData.stateStartTime = Date.now();
+        // Stocker la raison du forfait pour l'affichage
+        this.sessionData.forfeitReason = reason || null;
         
         try {
             await this.client.client
                 .from('debate_sessions')
                 .update({
                     state: 'RESULT',
+                    forfeit_reason: reason || null,
                     ...this.getSessionUpdateObject()
                 })
                 .eq('id', this.currentSessionId);
@@ -823,17 +828,33 @@ class DebateModule {
         }
     }
 
-    /** Termine la session brutalement (les deux avocats partis) */
+    /** Termine la session brutalement avec un message (les deux avocats partis, etc.) */
     async _endSessionAbruptly(reason) {
         if (!this.currentSessionId) return;
         
         console.log('[DEBATE] 💀 Fin abrupte:', reason);
         
+        // Stocker la raison pour l'afficher avant de fermer
+        this.sessionData.forfeitReason = reason;
+        
         try {
             await this.client.client
                 .from('debate_sessions')
-                .update({ is_active: false })
+                .update({
+                    state: 'RESULT',
+                    forfeit_reason: reason,
+                    ...this.getSessionUpdateObject()
+                })
                 .eq('id', this.currentSessionId);
+            
+            // Fermer la session après le délai d'affichage du résultat
+            setTimeout(async () => {
+                await this.client.client
+                    .from('debate_sessions')
+                    .update({ is_active: false })
+                    .eq('id', this.currentSessionId);
+            }, (this.config.resultTime || 10000) + 1000);
+            
         } catch (error) {
             console.error('[DEBATE] Erreur fin abrupte:', error);
         }
@@ -2033,6 +2054,44 @@ class DebateModule {
     }
 
     renderResultScreen(mainArea, interactionArea) {
+        const forfeitReason = this.sessionData.forfeitReason || null;
+        
+        // --- Écran de forfait (déconnexion d'un avocat) ---
+        if (forfeitReason) {
+            const votes1 = Object.values(this.sessionData.votes).filter(v => v === 'lawyer1').length;
+            const votes2 = Object.values(this.sessionData.votes).filter(v => v === 'lawyer2').length;
+            const winner = votes1 > votes2 ? 'lawyer1' : votes2 > votes1 ? 'lawyer2' : null;
+            const winnerName = winner === 'lawyer1' ? 'Avocat 1' : winner === 'lawyer2' ? 'Avocat 2' : null;
+            
+            mainArea.innerHTML = `
+                <div class="debate-result-screen forfeit">
+                    <div class="debate-result-icon">🏳️</div>
+                    <h2 class="debate-result-title" style="color: var(--danger, #e74c3c);">Partie interrompue</h2>
+                    <p class="debate-forfeit-reason" style="
+                        background: rgba(231,76,60,0.1);
+                        border: 1px solid rgba(231,76,60,0.3);
+                        border-radius: 12px;
+                        padding: 12px 20px;
+                        margin: 16px 0;
+                        font-size: 15px;
+                        color: var(--text-primary, #fff);
+                    ">⚠️ ${forfeitReason}</p>
+                    ${winnerName ? `
+                        <div class="debate-forfeit-winner" style="margin-top: 16px;">
+                            <div class="debate-result-icon">🏆</div>
+                            <p style="font-size: 18px; font-weight: bold; margin: 8px 0;">${winnerName} gagne par forfait !</p>
+                        </div>
+                    ` : '<p style="font-size: 16px; margin-top: 8px;">Aucun vainqueur déclaré.</p>'}
+                    <p class="debate-return-info" style="margin-top: 20px; opacity: 0.6;">
+                        Retour au lobby dans quelques secondes...
+                    </p>
+                </div>
+            `;
+            interactionArea.innerHTML = '';
+            return;
+        }
+        
+        // --- Écran de résultat normal ---
         const votes1 = Object.values(this.sessionData.votes).filter(v => v === 'lawyer1').length;
         const votes2 = Object.values(this.sessionData.votes).filter(v => v === 'lawyer2').length;
         const totalVotes = votes1 + votes2;
