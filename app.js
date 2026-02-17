@@ -1358,5 +1358,9 @@ if (document.readyState === 'loading') {
 window.addEventListener('beforeunload', () => {
     if (window.app) {
         window.app.cleanup();
+        // Retirer le joueur du débat si actif
+        if (window.app.debateModule && window.app.debateModule.currentSessionId) {
+            window.app.debateModule._leaveSession();
+        }
     }
 });
