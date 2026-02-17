@@ -1066,8 +1066,8 @@ class DebateModule {
                 let reason = '';
                 
                 try {
-                    const data = JSON.parse(session.data || '{}');
-                    const stateStartTime = data.stateStartTime || 0;
+                    // state_start_time est une colonne directe (ms timestamp), pas dans session.data
+                    const stateStartTime = session.state_start_time || 0;
                     const age = now - stateStartTime;
                     
                     // Critère 1 : Session trop vieille (dépasse le temps max)
@@ -1089,15 +1089,14 @@ class DebateModule {
                     }
                     
                     // Critère 4 : Aucun participant (session vide)
-                    else if (!data.participants || data.participants.length === 0) {
+                    else if (!session.participants || session.participants.length === 0) {
                         shouldClean = true;
                         reason = 'aucun participant';
                     }
                     
                 } catch (parseError) {
-                    // Si impossible de parser le JSON, c'est une session corrompue
-                    shouldClean = true;
-                    reason = 'données corrompues';
+                    // Si erreur inattendue, on ignore cette session
+                    console.warn('[DEBATE] Erreur lecture session', session.id, parseError);
                 }
                 
                 if (shouldClean) {
