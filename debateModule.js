@@ -264,9 +264,9 @@ class DebateModule {
     }
     
     // Helper pour sauvegarder la session dans la DB
+    // ⚠️ N'inclut PAS participants (pour ne jamais les écraser)
     getSessionUpdateObject() {
         return {
-            participants: this.sessionData.participants || [],
             decisionnaire: this.sessionData.decisionnaire,
             lawyer1: this.sessionData.lawyer1,
             lawyer2: this.sessionData.lawyer2,
@@ -569,11 +569,27 @@ class DebateModule {
 
         const now = Date.now();
         this.sessionData.stateStartTime = now;
+
+        // ✅ Lire les participants frais depuis la DB avant de transitionner
+        // (ne jamais écraser la liste des participants depuis le local)
+        const { data: freshSession } = await this.client.client
+            .from('debate_sessions')
+            .select('participants, state')
+            .eq('id', this.currentSessionId)
+            .single();
         
+        // Si quelqu'un d'autre a déjà fait la transition → on s'arrête
+        if (freshSession?.state !== this.currentState) {
+            console.log('[DEBATE] ⚠️ Transition déjà faite par un autre client, skip');
+            return;
+        }
+
+        const freshParticipants = freshSession?.participants || this.sessionData.participants || [];
+
         const updateData = {
             state: newState,
             state_start_time: now,
-            participants: this.sessionData.participants || [],
+            participants: freshParticipants, // ✅ participants frais, pas le local
             decisionnaire: this.sessionData.decisionnaire,
             lawyer1: this.sessionData.lawyer1,
             lawyer2: this.sessionData.lawyer2,
@@ -588,41 +604,54 @@ class DebateModule {
                 .from('debate_sessions')
                 .update(updateData)
                 .eq('id', this.currentSessionId)
-                .eq('state', this.currentState); // évite les transitions en doublon
+                .eq('state', this.currentState); // garde anti-doublon
             
             if (error) {
                 console.error('[DEBATE] ❌ Erreur transition:', error.message);
                 return;
             }
-            // Mettre à jour l'état local immédiatement
             this.currentState = newState;
-            console.log('[DEBATE] ✅ Transition OK →', newState);
+            this.sessionData.participants = freshParticipants;
+            console.log('[DEBATE] ✅ Transition OK →', newState, '| joueurs:', freshParticipants.length);
         } catch (error) {
             console.error('[DEBATE] Erreur transition:', error);
         }
     }
 
     async assignRoles() {
-        // Mélanger les participants
-        const shuffled = [...this.sessionData.participants].sort(() => Math.random() - 0.5);
-
+        // ✅ Lire les participants frais avant d'attribuer les rôles
+        const { data: freshSession } = await this.client.client
+            .from('debate_sessions')
+            .select('participants')
+            .eq('id', this.currentSessionId)
+            .single();
+        
+        const participants = freshSession?.participants || this.sessionData.participants || [];
+        this.sessionData.participants = participants;
+        
+        const shuffled = [...participants].sort(() => Math.random() - 0.5);
         this.sessionData.decisionnaire = shuffled[0];
         this.sessionData.lawyer1 = shuffled[1];
         this.sessionData.lawyer2 = shuffled[2];
         this.sessionData.spectators = shuffled.slice(3);
 
-        console.log('[DEBATE] Rôles attribués:', {
+        console.log('[DEBATE] Rôles attribués sur', participants.length, 'joueurs:', {
             decisionnaire: this.sessionData.decisionnaire,
             lawyer1: this.sessionData.lawyer1,
             lawyer2: this.sessionData.lawyer2,
             spectators: this.sessionData.spectators
         });
 
-        // Sauvegarder
+        // Sauvegarder rôles + participants frais
         try {
             await this.client.client
                 .from('debate_sessions')
-                .update(this.getSessionUpdateObject())
+                .update({
+                    participants: participants,
+                    decisionnaire: this.sessionData.decisionnaire,
+                    lawyer1: this.sessionData.lawyer1,
+                    lawyer2: this.sessionData.lawyer2,
+                })
                 .eq('id', this.currentSessionId);
         } catch (error) {
             console.error('[DEBATE] Erreur attribution rôles:', error);
@@ -990,9 +1019,6 @@ class DebateModule {
     async openDebateModule() {
         console.log('[DEBATE] Ouverture du module');
 
-        // CLEANUP : Nettoyer les sessions zombies avant de commencer
-        await this.cleanupOldSessions();
-
         // Chercher une session active (WAITING ou en cours)
         const { data: existingSessions } = await this.client.client
             .from('debate_sessions')
@@ -1002,18 +1028,32 @@ class DebateModule {
             .limit(1);
 
         if (existingSessions && existingSessions.length > 0) {
-            // Rejoindre la session existante
             const session = existingSessions[0];
-            this.updateFromSession(session); // utilise la fonction centralisée
-            
-            // Ajouter ce joueur s'il n'est pas déjà dans la liste
+            this.updateFromSession(session);
+
+            // Ajouter ce joueur uniquement s'il n'est pas déjà là
             if (!this.sessionData.participants.includes(this.userId)) {
-                this.sessionData.participants.push(this.userId);
+                // ✅ Lire les participants FRAIS depuis la DB avant d'écrire
+                // (évite d'écraser les autres joueurs arrivés entre-temps)
+                const { data: freshSession } = await this.client.client
+                    .from('debate_sessions')
+                    .select('participants')
+                    .eq('id', this.currentSessionId)
+                    .single();
+                
+                const freshParticipants = (freshSession?.participants || []);
+                if (!freshParticipants.includes(this.userId)) {
+                    freshParticipants.push(this.userId);
+                }
+                
+                // Mettre à jour UNIQUEMENT la liste des participants
                 await this.client.client
                     .from('debate_sessions')
-                    .update(this.getSessionUpdateObject())
+                    .update({ participants: freshParticipants })
                     .eq('id', this.currentSessionId);
-                console.log('[DEBATE] ✅ Rejoint session (' + this.currentState + '), joueurs:', this.sessionData.participants.length);
+                
+                this.sessionData.participants = freshParticipants;
+                console.log('[DEBATE] ✅ Rejoint session, joueurs:', freshParticipants.length);
             } else {
                 console.log('[DEBATE] ✅ Déjà dans la session (' + this.currentState + ')');
             }
