@@ -150,7 +150,12 @@ class DebateModule {
     // ============================================
 
     startRealtimeSync() {
-        this.timerInterval = setInterval(() => this.updateTimerOnly(), 1000);
+        // Le timer tourne TOUJOURS (modal ouverte ou non) pour gérer les transitions
+        this.timerInterval = setInterval(() => {
+            this.updateTimerOnly();
+            // Vérifier la progression à chaque seconde pour tout le monde
+            this.checkStateProgression();
+        }, 1000);
 
         this.realtimeChannel = this.client.client
             .channel('debate_sessions_changes')
@@ -207,10 +212,9 @@ class DebateModule {
         }
 
         this.updateBadge();
-        if (this.isActive) {
-            this.updateUI();
-            await this.checkStateProgression();
-        }
+        if (this.isActive) this.updateUI();
+        // Toujours vérifier la progression, même modal fermée
+        await this.checkStateProgression();
     }
 
     updateFromSession(session) {
@@ -307,57 +311,106 @@ class DebateModule {
     async checkStateProgression() {
         if (!this.currentSessionId) return;
 
-        // Seul le premier participant (organisateur logique) gère les transitions
-        const isOrganizer = this.sessionData.participants?.[0] === this.userId;
-        if (!isOrganizer) return;
-
+        // Anti-doublon : éviter que 2 clients déclenchent la même transition simultanément
+        // Chaque client a un délai aléatoire + on vérifie que l'état n'a pas déjà changé
         const elapsed     = Date.now() - this.sessionData.stateStartTime;
         const count       = this.sessionData.participants?.length || 0;
-        const randomDelay = Math.random() * 300 + 100;
+
+        // Délai aléatoire basé sur la position dans la liste pour éviter les collisions
+        const myIndex    = this.sessionData.participants?.indexOf(this.userId) ?? 0;
+        const safeIndex  = myIndex < 0 ? 0 : myIndex;
+        const randomDelay = safeIndex * 200 + Math.random() * 150;
+
+        // Protection contre les transitions multiples
+        const transitionKey = `${this.currentSessionId}_${this.currentState}`;
+        if (this._pendingTransition === transitionKey) return;
 
         switch (this.currentState) {
             case 'WAITING':
+                // N'importe quel participant peut déclencher si assez de joueurs
                 if (count >= this.config.minPlayers) {
-                    setTimeout(() => this.transitionToState('STABILIZING'), randomDelay);
+                    this._pendingTransition = transitionKey;
+                    setTimeout(async () => {
+                        // Re-vérifier que l'état n'a pas déjà changé (quelqu'un d'autre l'a fait)
+                        if (this.currentState === 'WAITING' && this.currentSessionId) {
+                            await this.transitionToState('STABILIZING');
+                        }
+                        this._pendingTransition = null;
+                    }, randomDelay);
                 }
                 break;
 
             case 'STABILIZING':
                 if (elapsed >= this.config.stabilizationTime) {
-                    // Assigner les rôles puis passer en COUNTDOWN
-                    await this.assignRoles();
-                    setTimeout(() => this.transitionToState('COUNTDOWN'), randomDelay);
+                    this._pendingTransition = transitionKey;
+                    setTimeout(async () => {
+                        if (this.currentState === 'STABILIZING' && this.currentSessionId) {
+                            await this.assignRoles();
+                            await this.transitionToState('COUNTDOWN');
+                        }
+                        this._pendingTransition = null;
+                    }, randomDelay);
                 }
                 break;
 
             case 'COUNTDOWN':
                 if (elapsed >= this.config.countdownTime) {
-                    setTimeout(() => this.transitionToState('QUESTION'), randomDelay);
+                    this._pendingTransition = transitionKey;
+                    setTimeout(async () => {
+                        if (this.currentState === 'COUNTDOWN' && this.currentSessionId) {
+                            await this.transitionToState('QUESTION');
+                        }
+                        this._pendingTransition = null;
+                    }, randomDelay);
                 }
                 break;
 
             case 'QUESTION':
                 if (elapsed >= this.config.questionTime) {
-                    if (!this.sessionData.question) await this.setDefaultQuestion();
-                    setTimeout(() => this.transitionToState('DEBATE'), randomDelay);
+                    this._pendingTransition = transitionKey;
+                    setTimeout(async () => {
+                        if (this.currentState === 'QUESTION' && this.currentSessionId) {
+                            if (!this.sessionData.question) await this.setDefaultQuestion();
+                            await this.transitionToState('DEBATE');
+                        }
+                        this._pendingTransition = null;
+                    }, randomDelay);
                 }
                 break;
 
             case 'DEBATE':
                 if (elapsed >= this.config.debateTime) {
-                    setTimeout(() => this.transitionToState('VOTING'), randomDelay);
+                    this._pendingTransition = transitionKey;
+                    setTimeout(async () => {
+                        if (this.currentState === 'DEBATE' && this.currentSessionId) {
+                            await this.transitionToState('VOTING');
+                        }
+                        this._pendingTransition = null;
+                    }, randomDelay);
                 }
                 break;
 
             case 'VOTING':
                 if (elapsed >= this.config.votingTime) {
-                    setTimeout(() => this.transitionToState('RESULT'), randomDelay);
+                    this._pendingTransition = transitionKey;
+                    setTimeout(async () => {
+                        if (this.currentState === 'VOTING' && this.currentSessionId) {
+                            await this.transitionToState('RESULT');
+                        }
+                        this._pendingTransition = null;
+                    }, randomDelay);
                 }
                 break;
 
             case 'RESULT':
                 if (elapsed >= this.config.resultTime) {
-                    setTimeout(() => this.endSession(), randomDelay);
+                    this._pendingTransition = transitionKey;
+                    setTimeout(async () => {
+                        if (this.currentState === 'RESULT' && this.currentSessionId) {
+                            await this.endSession();
+                        }
+                        this._pendingTransition = null;
+                    }, randomDelay);
                 }
                 break;
         }
